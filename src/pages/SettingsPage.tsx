@@ -66,11 +66,14 @@ export function SettingsPage({
 
   const handleSaveAndTestApi = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleaned = apiUrl.trim() || 'http://localhost:5000';
-    onUpdateSettings({ flaskApiBaseUrl: cleaned });
+    const cleaned = apiUrl.trim().replace(/\/+$/, '') || 'http://127.0.0.1:5000';
+    const normalized =
+      cleaned === 'http://localhost:5000' ? 'http://127.0.0.1:5000' : cleaned;
+    setApiUrl(normalized);
+    onUpdateSettings({ flaskApiBaseUrl: normalized });
     setTestingApi(true);
     try {
-      const res = await onTestBackend(cleaned);
+      const res = await onTestBackend(normalized);
       flashNotice(res.message);
     } finally {
       setTestingApi(false);
@@ -91,7 +94,7 @@ export function SettingsPage({
     setCurrentPwd('');
     setNewPwd('');
     setConfirmPwd('');
-    flashNotice('Password update request validated (session-only in Demo Mode).');
+    flashNotice('Password update request validated (session-only — backend endpoint required for persistence).');
   };
 
   const tabs: Array<{
@@ -223,9 +226,9 @@ export function SettingsPage({
                   Flask Backend &amp; YOLO AI API Connection
                 </h3>
                 <p className="mt-1 text-xs text-[#6B7280]">
-                  Point WasteSmart to your team&apos;s Flask server (with MySQL + YOLO/OpenCV
+                   Point WasteSmart to your team&apos;s Flask server (with MySQL + YOLO/OpenCV
                   endpoints). When unreachable, WasteSmart automatically runs in clearly labelled
-                  Demo Mode.
+                  Offline Mode.
                 </p>
               </div>
 
@@ -237,7 +240,7 @@ export function SettingsPage({
                       backendStatus.connected ? 'text-[#059669]' : 'text-[#D97706]'
                     }
                   >
-                    {backendStatus.connected ? 'Live Flask API' : 'Demo Mode (Local Fallback)'}
+                    {backendStatus.connected ? 'Live Flask API' : 'Offline Mode (Local Fallback)'}
                   </span>
                 </p>
                 <p className="mt-1 text-[#4B5563]">{backendStatus.message}</p>
@@ -260,7 +263,7 @@ export function SettingsPage({
                     flashNotice(
                       e.target.checked
                         ? 'Live Flask API mode enabled.'
-                        : 'Switched back to Demo Mode.'
+                        : 'Switched to Offline Mode (Flask API disabled).'
                     );
                   }}
                   className="h-5 w-5 rounded accent-[#064E3B]"
@@ -276,7 +279,7 @@ export function SettingsPage({
                   type="url"
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder="http://localhost:5000"
+                  placeholder="http://127.0.0.1:5000"
                   className="mt-1.5 w-full rounded-xl border border-[#DCE6E0] bg-[#F9FBFA] px-4 py-2.5 font-mono text-sm text-[#1F2937]"
                 />
                 <p className="mt-1.5 text-[11px] text-[#6B7280]">
@@ -449,7 +452,7 @@ export function SettingsPage({
 
               <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E2EAE5] bg-[#F9FBFA] p-4">
                 <div>
-                  <p className="text-sm font-semibold text-[#022C22]">Reset Demo Dataset</p>
+                  <p className="text-sm font-semibold text-[#022C22]">Reload Local Defaults</p>
                   <p className="text-xs text-[#6B7280]">
                     Restore default sample municipal complaints and notifications in localStorage.
                   </p>
@@ -458,12 +461,12 @@ export function SettingsPage({
                   type="button"
                   onClick={() => {
                     onResetDemoData();
-                    flashNotice('Demo complaints and notifications restored to defaults.');
+                    flashNotice('Local defaults restored.');
                   }}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-[#DCE6E0] bg-white px-4 py-2 text-xs font-semibold text-[#064E3B] hover:bg-[#ECFDF5]"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  <span>Reset Demo Data</span>
+                  <span>Reload Defaults</span>
                 </button>
               </div>
 

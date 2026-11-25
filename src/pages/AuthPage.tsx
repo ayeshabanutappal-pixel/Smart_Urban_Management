@@ -14,26 +14,23 @@ import { WasteSmartLogo } from '../components/WasteSmartLogo';
 import type { UserProfile, UserRole } from '../types/waste';
 import { validateAuthForm } from '../utils/wasteLogic';
 import { authenticateWithFlask } from '../services/flaskApi';
-import { DEMO_ADMIN_USER, DEMO_CITIZEN_USER } from '../data/seedData';
 
 interface AuthPageProps {
   flaskApiBaseUrl: string;
-  useLiveFlaskApi: boolean;
-  onAuthenticated: (user: UserProfile, rememberEmail: boolean) => void;
+  onAuthenticated: (user: UserProfile, token: string, rememberEmail: boolean) => void;
   initialRememberedEmail?: string;
 }
 
 export function AuthPage({
   flaskApiBaseUrl,
-  useLiveFlaskApi,
   onAuthenticated,
   initialRememberedEmail = '',
 }: AuthPageProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [role, setRole] = useState<UserRole>('citizen');
+  const [portalView, setPortalView] = useState<UserRole>('citizen');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState(initialRememberedEmail || 'citizen@wastesmart.city');
-  const [password, setPassword] = useState('wastesmart123');
+  const [email, setEmail] = useState(initialRememberedEmail);
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(Boolean(initialRememberedEmail));
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +49,7 @@ export function AuthPage({
       name,
       email,
       password,
+      allowPhoneIdentifier: mode === 'login' && portalView === 'worker',
     });
     if (validationError) {
       setError(validationError);
@@ -60,38 +58,32 @@ export function AuthPage({
 
     setSubmitting(true);
     try {
-      const { user } = await authenticateWithFlask(
-        flaskApiBaseUrl,
-        {
-          mode,
-          name,
-          email,
-          password,
-          role,
-        },
-        useLiveFlaskApi
-      );
-      onAuthenticated(user, rememberMe);
+      const { user, token } = await authenticateWithFlask(flaskApiBaseUrl, {
+        mode,
+        name,
+        email,
+        password,
+      });
+      onAuthenticated(user, token, rememberMe);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Authentication failed. Please try again.';
+      setError(message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleQuickDemo = (targetRole: UserRole) => {
-    const demoUser = targetRole === 'admin' ? DEMO_ADMIN_USER : DEMO_CITIZEN_USER;
-    onAuthenticated(demoUser, false);
-  };
-
   const handleForgotSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetEmail.trim() || !resetEmail.includes('@')) {
-      setError('Enter a valid email address to receive password reset instructions.');
+      setError('Enter a valid email address.');
       return;
     }
     setError(null);
     setForgotOpen(false);
     setInfoMessage(
-      `If an account exists for ${resetEmail.trim()}, a password reset link has been queued.`
+      'Self-service password reset emails are not enabled. Contact your municipal administrator for account recovery.'
     );
     setResetEmail('');
   };
@@ -210,52 +202,87 @@ export function AuthPage({
           <p className="mt-1.5 text-sm text-[#4B5563]">
             {mode === 'login'
               ? 'Sign in to continue reporting, tracking, or coordinating urban sanitation.'
-              : 'Register as a citizen or municipal coordinator to join WasteSmart.'}
+              : 'Create a citizen account to report roadside waste and track cleanup status.'}
           </p>
 
-          {/* Role Selector Tabs */}
-          <div
-            role="tablist"
-            aria-label="Account role"
-            className="mt-6 grid grid-cols-2 gap-1 rounded-xl bg-[#EEF4F0] p-1"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={role === 'citizen'}
-              onClick={() => {
-                setRole('citizen');
-                if (mode === 'login' && email === 'admin@wastesmart.city') {
-                  setEmail('citizen@wastesmart.city');
-                }
-              }}
-              className={`rounded-lg py-2 text-xs font-semibold transition-all whitespace-nowrap ${
-                role === 'citizen'
-                  ? 'bg-white text-[#064E3B] shadow-xs'
-                  : 'text-[#4B5563] hover:text-[#022C22]'
-              }`}
+          {/* Portal Context Tabs (backend enforces authoritative user role) */}
+          {mode === 'login' ? (
+            <div
+              role="tablist"
+              aria-label="Account portal"
+              className="mt-6 grid grid-cols-3 gap-1 rounded-xl bg-[#EEF4F0] p-1"
             >
-              Citizen Portal
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={role === 'admin'}
-              onClick={() => {
-                setRole('admin');
-                if (mode === 'login' && email === 'citizen@wastesmart.city') {
-                  setEmail('admin@wastesmart.city');
-                }
-              }}
-              className={`rounded-lg py-2 text-xs font-semibold transition-all whitespace-nowrap ${
-                role === 'admin'
-                  ? 'bg-white text-[#064E3B] shadow-xs'
-                  : 'text-[#4B5563] hover:text-[#022C22]'
-              }`}
-            >
-              Municipal Admin
-            </button>
-          </div>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={portalView === 'citizen'}
+                onClick={() => {
+                  setPortalView('citizen');
+                  setEmail(initialRememberedEmail);
+                  setPassword('');
+                  setInfoMessage(null);
+                  setError(null);
+                }}
+                className={`rounded-lg py-2 text-xs font-semibold transition-all whitespace-nowrap ${
+                  portalView === 'citizen'
+                    ? 'bg-white text-[#064E3B] shadow-xs'
+                    : 'text-[#4B5563] hover:text-[#022C22]'
+                }`}
+              >
+                Citizen
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={portalView === 'worker'}
+                onClick={() => {
+                  setPortalView('worker');
+                  setEmail('');
+                  setPassword('');
+                  setInfoMessage(
+                    'Sign in with the phone number or email assigned by your municipal administrator.'
+                  );
+                  setError(null);
+                }}
+                className={`rounded-lg py-2 text-xs font-semibold transition-all whitespace-nowrap ${
+                  portalView === 'worker'
+                    ? 'bg-white text-[#064E3B] shadow-xs'
+                    : 'text-[#4B5563] hover:text-[#022C22]'
+                }`}
+              >
+                Field Worker
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={portalView === 'admin'}
+                onClick={() => {
+                  setPortalView('admin');
+                  setEmail(
+                    (import.meta.env.VITE_ADMIN_EMAIL as string | undefined) ??
+                      'admin@wastesmart.com'
+                  );
+                  setPassword(
+                    (import.meta.env.VITE_ADMIN_PASSWORD as string | undefined) ??
+                      'WasteSmart@Admin2026'
+                  );
+                  setInfoMessage('Administrator credentials are ready.');
+                  setError(null);
+                }}
+                className={`rounded-lg py-2 text-xs font-semibold transition-all whitespace-nowrap ${
+                  portalView === 'admin'
+                    ? 'bg-white text-[#064E3B] shadow-xs'
+                    : 'text-[#4B5563] hover:text-[#022C22]'
+                }`}
+              >
+                Municipal Admin
+              </button>
+            </div>
+          ) : (
+            <div className="mt-6 rounded-xl bg-[#EEF4F0] px-3.5 py-2.5 text-xs font-semibold text-[#064E3B]">
+              Citizen Portal Registration
+            </div>
+          )}
 
           {/* Alerts */}
           {error && (
@@ -346,17 +373,23 @@ export function AuthPage({
                   htmlFor="auth-email"
                   className="block text-xs font-semibold text-[#374151]"
                 >
-                  Email Address
+                  {mode === 'login' && portalView === 'worker'
+                    ? 'Phone Number or Worker Email'
+                    : 'Email Address'}
                 </label>
                 <div className="relative mt-1.5">
                   <Mail className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" />
                   <input
                     id="auth-email"
-                    type="email"
-                    autoComplete="email"
+                    type={mode === 'login' && portalView === 'worker' ? 'text' : 'email'}
+                    autoComplete={mode === 'login' && portalView === 'worker' ? 'username' : 'email'}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@wastesmart.city"
+                    placeholder={
+                      mode === 'login' && portalView === 'worker'
+                        ? '+91 98450 00000 or worker@wastesmart.city'
+                        : 'name@wastesmart.city'
+                    }
                     className="w-full rounded-xl border border-[#D4E2DA] bg-[#F9FBFA] py-3 pl-10 pr-4 text-sm text-[#1F2937] focus:border-[#059669] focus:bg-white"
                   />
                 </div>
@@ -426,36 +459,15 @@ export function AuthPage({
                 className="w-full rounded-xl bg-[#064E3B] py-3.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-[#022C22] disabled:opacity-60"
               >
                 {submitting
-                  ? 'Signing in...'
+                  ? mode === 'login'
+                    ? 'Signing in...'
+                    : 'Creating account...'
                   : mode === 'login'
                   ? 'Login to WasteSmart'
                   : 'Create WasteSmart Account'}
               </button>
             </form>
           )}
-
-          {/* Quick Demo Access Row */}
-          <div className="mt-6 border-t border-[#E5ECE8] pt-5">
-            <p className="text-xs font-medium text-[#6B7280]">
-              Quick preview access (Demo Mode):
-            </p>
-            <div className="mt-2.5 grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={() => handleQuickDemo('citizen')}
-                className="rounded-xl border border-[#DCE6E0] bg-[#F5F8F6] px-3 py-2.5 text-xs font-semibold text-[#064E3B] transition-colors hover:border-[#059669] hover:bg-[#ECFDF5] whitespace-nowrap"
-              >
-                Demo Citizen
-              </button>
-              <button
-                type="button"
-                onClick={() => handleQuickDemo('admin')}
-                className="rounded-xl border border-[#DCE6E0] bg-[#F5F8F6] px-3 py-2.5 text-xs font-semibold text-[#064E3B] transition-colors hover:border-[#059669] hover:bg-[#ECFDF5] whitespace-nowrap"
-              >
-                Demo Admin
-              </button>
-            </div>
-          </div>
 
           {/* Toggle Login / Sign-up */}
           <p className="mt-6 text-center text-xs text-[#4B5563]">
@@ -466,6 +478,7 @@ export function AuthPage({
                   type="button"
                   onClick={() => {
                     setMode('register');
+                    setPortalView('citizen');
                     setError(null);
                     setInfoMessage(null);
                   }}

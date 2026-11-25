@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckCircle2, MapPin, Phone, Truck, UserCheck } from 'lucide-react';
+import { AlertCircle, CheckCircle2, MapPin, Phone, Truck, UserCheck } from 'lucide-react';
 import { ComplaintStatusLabel, WasteCategoryText } from '../components/StatusText';
 import type { Complaint, ComplaintStatus, Worker } from '../types/waste';
 
@@ -11,7 +11,7 @@ interface AssignWorkersPageProps {
     workerId: string,
     workerName: string,
     status: ComplaintStatus
-  ) => void;
+  ) => Promise<void>;
 }
 
 export function AssignWorkersPage({
@@ -23,9 +23,14 @@ export function AssignWorkersPage({
     Record<string, string>
   >({});
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
 
   const openQueue = useMemo(
-    () => complaints.filter((c) => c.status !== 'Resolved'),
+    () =>
+      complaints.filter(
+        (c) => c.status !== 'Resolved' && c.status !== 'Pending Verification'
+      ),
     [complaints]
   );
 
@@ -40,16 +45,26 @@ export function AssignWorkersPage({
     return map;
   }, [complaints]);
 
-  const handleDispatch = (complaint: Complaint) => {
+  const handleDispatch = async (complaint: Complaint) => {
     const chosenId =
       selectedWorkerByComplaint[complaint.id] ||
       complaint.assignedWorkerId ||
       workers[0]?.id;
     const worker = workers.find((w) => w.id === chosenId);
     if (!worker) return;
-    onAssignWorker(complaint.id, worker.id, worker.name, 'Assigned');
-    setFeedback(`Dispatched ${worker.name} (${worker.vehicleCode}) to ${complaint.id}.`);
-    window.setTimeout(() => setFeedback(null), 3500);
+    setError(null);
+    setDispatchingId(complaint.id);
+    try {
+      await onAssignWorker(complaint.id, worker.id, worker.name, 'Assigned');
+      setFeedback(`Dispatched ${worker.name} (${worker.vehicleCode}) to ${complaint.id}.`);
+      window.setTimeout(() => setFeedback(null), 3500);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : `Unable to assign worker to ${complaint.id}.`
+      );
+    } finally {
+      setDispatchingId(null);
+    }
   };
 
   return (
@@ -73,6 +88,16 @@ export function AssignWorkersPage({
           </div>
         )}
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* Worker Cards Grid */}
       <section aria-label="Sanitation Crews" className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -146,6 +171,17 @@ export function AssignWorkersPage({
             </div>
           );
         })}
+        {workers.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-[#C7DBD0] bg-white px-6 py-10 text-center md:col-span-2 xl:col-span-3">
+            <p className="font-display text-sm font-bold text-[#022C22]">
+              No active sanitation workers registered in database
+            </p>
+            <p className="mt-1 text-xs text-[#6B7280]">
+              Workers added to the MySQL <code className="font-mono">workers</code> table will
+              appear here for assignment.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* Live Dispatch Queue */}
@@ -198,24 +234,30 @@ export function AssignWorkersPage({
                   <select
                     aria-label={`Choose worker for ${c.id}`}
                     value={selectedVal}
+                    disabled={workers.length === 0 || dispatchingId === c.id}
                     onChange={(e) =>
                       setSelectedWorkerByComplaint((prev) => ({
                         ...prev,
                         [c.id]: e.target.value,
                       }))
                     }
-                    className="rounded-xl border border-[#DCE6E0] bg-[#F9FBFA] px-3 py-2 text-xs font-medium text-[#1F2937] focus:border-[#059669]"
+                    className="rounded-xl border border-[#DCE6E0] bg-[#F9FBFA] px-3 py-2 text-xs font-medium text-[#1F2937] focus:border-[#059669] disabled:opacity-60"
                   >
-                    {workers.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} — {w.ward.split(' - ')[0]}
-                      </option>
-                    ))}
+                    {workers.length === 0 ? (
+                      <option value="">No workers available</option>
+                    ) : (
+                      workers.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name} — {w.ward.split(' - ')[0]}
+                        </option>
+                      ))
+                    )}
                   </select>
                   <button
                     type="button"
-                    onClick={() => handleDispatch(c)}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#064E3B] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#022C22] whitespace-nowrap"
+                    disabled={workers.length === 0 || dispatchingId === c.id}
+                    onClick={() => void handleDispatch(c)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#064E3B] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#022C22] disabled:opacity-60 whitespace-nowrap"
                   >
                     <UserCheck className="h-3.5 w-3.5" />
                     <span>{c.assignedWorkerId ? 'Reassign' : 'Dispatch'}</span>
@@ -234,3 +276,4 @@ export function AssignWorkersPage({
     </div>
   );
 }
+

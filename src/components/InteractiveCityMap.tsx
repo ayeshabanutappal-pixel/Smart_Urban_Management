@@ -1,5 +1,8 @@
-import { useState } from 'react';
-import { Crosshair, ExternalLink, MapPin, Minus, Plus } from 'lucide-react';
+import 'leaflet/dist/leaflet.css';
+import { useEffect, useMemo, useRef } from 'react';
+import L from 'leaflet';
+import { ExternalLink, MapPin, Minus, Plus } from 'lucide-react';
+import { MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import type { Complaint, Coordinates } from '../types/waste';
 import { CATEGORY_COLORS } from '../utils/wasteLogic';
 
@@ -8,41 +11,143 @@ interface InteractiveCityMapProps {
   selectedComplaintId?: string | null;
   onSelectComplaint?: (complaint: Complaint) => void;
   pickerMode?: boolean;
-  pickedCoordinates?: Coordinates;
-  onPickCoordinates?: (coords: Coordinates, suggestedLocation: string) => void;
+  pickedCoordinates?: Coordinates | null;
+  onPickCoordinates?: (coords: Coordinates) => void;
   heightClass?: string;
 }
 
-// Municipal bounding box around demo city coordinates (12.954 - 12.988 lat, 77.580 - 77.615 lng)
-const LAT_MIN = 12.955;
-const LAT_MAX = 12.986;
-const LNG_MIN = 77.582;
-const LNG_MAX = 77.614;
+const DEFAULT_OVERVIEW_CENTER: [number, number] = [20, 0];
+const DEFAULT_OVERVIEW_ZOOM = 2;
 
-function projectToPercent(coords: Coordinates): { x: number; y: number } {
-  const x = ((coords.lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * 100;
-  const y = (1 - (coords.lat - LAT_MIN) / (LAT_MAX - LAT_MIN)) * 100;
-  return {
-    x: Math.min(92, Math.max(8, x)),
-    y: Math.min(88, Math.max(12, y)),
-  };
+function createPickerDivIcon(): L.DivIcon {
+  return L.divIcon({
+    className: 'wastesmart-picker-pin',
+    html: `
+      <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-100%);">
+        <div style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9999px;background:#064E3B;border:3px solid #A7F3D0;box-shadow:0 6px 16px rgba(2,44,34,0.35);color:#FFFFFF;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>
+        </div>
+        <div style="width:8px;height:8px;background:#064E3B;transform:rotate(45deg);margin-top:-5px;"></div>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
 }
 
-function unprojectFromPercent(xPct: number, yPct: number): Coordinates {
-  const lng = LNG_MIN + (xPct / 100) * (LNG_MAX - LNG_MIN);
-  const lat = LAT_MAX - (yPct / 100) * (LAT_MAX - LAT_MIN);
-  return {
-    lat: Number(lat.toFixed(5)),
-    lng: Number(lng.toFixed(5)),
-  };
+function createComplaintDivIcon(label: string, color: string, isSelected: boolean): L.DivIcon {
+  const bg = isSelected ? '#022C22' : color;
+  const ring = isSelected ? 'box-shadow:0 0 0 3px #A7F3D0, 0 6px 14px rgba(2,44,34,0.35);' : 'box-shadow:0 4px 10px rgba(0,0,0,0.22);';
+  return L.divIcon({
+    className: 'wastesmart-complaint-pin',
+    html: `
+      <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-100%);cursor:pointer;">
+        <div style="display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;background:${bg};color:#FFFFFF;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;white-space:nowrap;${ring}">
+          <span>${label}</span>
+        </div>
+        <div style="width:7px;height:7px;background:${bg};transform:rotate(45deg);margin-top:-4px;"></div>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
 }
 
-function inferRoadLabel(coords: Coordinates): string {
-  if (coords.lat > 12.976 && coords.lng < 77.595) return 'Civic Center Boulevard, Ward 1';
-  if (coords.lat > 12.972) return 'Greenpark Avenue Crossroad, Ward 4';
-  if (coords.lng > 77.601) return 'Central Market East Road, Ward 2';
-  if (coords.lat < 12.963) return 'Industrial Belt Feeder Road, Ward 5';
-  return 'Riverside Sector Main Lane, Ward 7';
+function MapInstanceBridge({
+  onReady,
+}: {
+  onReady: (map: L.Map) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    onReady(map);
+  }, [map, onReady]);
+  return null;
+}
+
+function PickerMapEvents({
+  pickerMode,
+  onPickCoordinates,
+}: {
+  pickerMode: boolean;
+  onPickCoordinates?: (coords: Coordinates) => void;
+}) {
+  useMapEvents({
+    click(e) {
+      if (!pickerMode || !onPickCoordinates) return;
+      onPickCoordinates({
+        lat: Number(e.latlng.lat.toFixed(6)),
+        lng: Number(e.latlng.lng.toFixed(6)),
+      });
+    },
+  });
+  return null;
+}
+
+function ViewportController({
+  pickerMode,
+  pickedCoordinates,
+  complaints,
+  selectedComplaintId,
+}: {
+  pickerMode: boolean;
+  pickedCoordinates?: Coordinates | null;
+  complaints: Complaint[];
+  selectedComplaintId?: string | null;
+}) {
+  const map = useMap();
+  const lastCoordsKeyRef = useRef<string | null>(null);
+  const lastSelectedIdRef = useRef<string | null>(null);
+  const fittedCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!pickerMode) return;
+    if (!pickedCoordinates) {
+      lastCoordsKeyRef.current = null;
+      return;
+    }
+
+    const key = `${pickedCoordinates.lat.toFixed(6)},${pickedCoordinates.lng.toFixed(6)}`;
+    if (lastCoordsKeyRef.current === key) return;
+    lastCoordsKeyRef.current = key;
+
+    const currentZoom = map.getZoom();
+    if (currentZoom >= 15) {
+      map.panTo([pickedCoordinates.lat, pickedCoordinates.lng], { animate: true });
+    } else {
+      map.flyTo([pickedCoordinates.lat, pickedCoordinates.lng], 16, { duration: 0.75 });
+    }
+  }, [map, pickerMode, pickedCoordinates]);
+
+  useEffect(() => {
+    if (pickerMode) return;
+
+    if (selectedComplaintId) {
+      const selected = complaints.find((c) => c.id === selectedComplaintId);
+      if (selected && lastSelectedIdRef.current !== selected.id) {
+        lastSelectedIdRef.current = selected.id;
+        map.flyTo([selected.coordinates.lat, selected.coordinates.lng], Math.max(map.getZoom(), 15), {
+          duration: 0.65,
+        });
+        return;
+      }
+    }
+
+    if (complaints.length > 0 && fittedCountRef.current !== complaints.length) {
+      fittedCountRef.current = complaints.length;
+      if (complaints.length === 1) {
+        const only = complaints[0];
+        map.setView([only.coordinates.lat, only.coordinates.lng], 15);
+      } else {
+        const bounds = L.latLngBounds(
+          complaints.map((c) => [c.coordinates.lat, c.coordinates.lng] as [number, number])
+        );
+        map.fitBounds(bounds, { padding: [44, 44], maxZoom: 15 });
+      }
+    }
+  }, [map, pickerMode, complaints, selectedComplaintId]);
+
+  return null;
 }
 
 export function InteractiveCityMap({
@@ -50,175 +155,109 @@ export function InteractiveCityMap({
   selectedComplaintId,
   onSelectComplaint,
   pickerMode = false,
-  pickedCoordinates,
+  pickedCoordinates = null,
   onPickCoordinates,
   heightClass = 'h-80',
 }: InteractiveCityMapProps) {
-  const [zoom, setZoom] = useState(1);
+  const mapRef = useRef<L.Map | null>(null);
+  const pickerIcon = useMemo(() => createPickerDivIcon(), []);
 
-  const activeCoords =
-    pickedCoordinates ??
-    complaints.find((c) => c.id === selectedComplaintId)?.coordinates ??
-    complaints[0]?.coordinates ?? { lat: 12.9716, lng: 77.5946 };
+  const selectedComplaint = useMemo(
+    () => complaints.find((c) => c.id === selectedComplaintId) ?? null,
+    [complaints, selectedComplaintId]
+  );
 
-  const osmUrl = `https://www.openstreetmap.org/?mlat=${activeCoords.lat}&mlon=${activeCoords.lng}#map=15/${activeCoords.lat}/${activeCoords.lng}`;
+  const activeCoords: Coordinates | null = pickerMode
+    ? pickedCoordinates
+    : selectedComplaint?.coordinates ?? complaints[0]?.coordinates ?? null;
 
-  const handleMapClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!pickerMode || !onPickCoordinates) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
-    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
-    const coords = unprojectFromPercent(xPct, yPct);
-    onPickCoordinates(coords, inferRoadLabel(coords));
-  };
+  const initialCenter: [number, number] = activeCoords
+    ? [activeCoords.lat, activeCoords.lng]
+    : DEFAULT_OVERVIEW_CENTER;
+  const initialZoom = activeCoords ? (pickerMode ? 16 : 14) : DEFAULT_OVERVIEW_ZOOM;
+
+  const osmUrl = activeCoords
+    ? `https://www.openstreetmap.org/?mlat=${activeCoords.lat}&mlon=${activeCoords.lng}#map=16/${activeCoords.lat}/${activeCoords.lng}`
+    : 'https://www.openstreetmap.org/';
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-[#DCE6E0] bg-[#EAF2ED]">
-      {/* Map Viewport */}
+    <div className="relative isolate overflow-hidden rounded-xl border border-[#DCE6E0] bg-[#EDF3EF]">
       <div
-        onClick={handleMapClick}
-        className={`relative w-full overflow-hidden ${heightClass} ${
-          pickerMode ? 'cursor-crosshair' : 'cursor-default'
-        }`}
+        className={`relative w-full ${heightClass}`}
         data-testid="interactive-city-map"
       >
-        <div
-          className="absolute inset-0 transition-transform duration-200 ease-out origin-center"
-          style={{ transform: `scale(${zoom})` }}
+        <MapContainer
+          center={initialCenter}
+          zoom={initialZoom}
+          zoomControl={false}
+          scrollWheelZoom={true}
+          className={`h-full w-full z-0 ${pickerMode ? 'cursor-crosshair' : ''}`}
         >
-          {/* Crisp Municipal Cartographic Vector Layer (OpenStreetMap-style streets, river, parks, wards) */}
-          <svg
-            viewBox="0 0 900 440"
-            className="h-full w-full object-cover"
-            preserveAspectRatio="xMidYMid slice"
-            aria-hidden="true"
-          >
-            <rect width="900" height="440" fill="#EDF3EF" />
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
 
-            {/* Urban Parks & Greenbelts */}
-            <path d="M55 40 L215 35 L235 120 L80 135 Z" fill="#D1FAE5" />
-            <path d="M645 45 L845 55 L830 165 L665 148 Z" fill="#D1FAE5" />
-            <path d="M360 285 L520 275 L545 385 L370 398 Z" fill="#D1FAE5" />
+          <MapInstanceBridge onReady={(map) => { mapRef.current = map; }} />
+          <PickerMapEvents pickerMode={pickerMode} onPickCoordinates={onPickCoordinates} />
+          <ViewportController
+            pickerMode={pickerMode}
+            pickedCoordinates={pickedCoordinates}
+            complaints={complaints}
+            selectedComplaintId={selectedComplaintId}
+          />
 
-            {/* Municipal River Channel */}
-            <path
-              d="M-10 345 C140 315 245 380 410 345 C580 310 720 360 915 310"
-              stroke="#BAE6FD"
-              strokeWidth="22"
-              fill="none"
-              strokeLinecap="round"
-            />
-            <path
-              d="M-10 345 C140 315 245 380 410 345 C580 310 720 360 915 310"
-              stroke="#7DD3FC"
-              strokeWidth="2"
-              strokeDasharray="8 8"
-              fill="none"
-            />
-
-            {/* Secondary Street Grid */}
-            <g stroke="#DCE6E0" strokeWidth="4">
-              <line x1="0" y1="95" x2="900" y2="95" />
-              <line x1="0" y1="185" x2="900" y2="178" />
-              <line x1="0" y1="268" x2="900" y2="262" />
-              <line x1="150" y1="0" x2="138" y2="440" />
-              <line x1="310" y1="0" x2="318" y2="440" />
-              <line x1="485" y1="0" x2="478" y2="440" />
-              <line x1="655" y1="0" x2="664" y2="440" />
-              <line x1="790" y1="0" x2="782" y2="440" />
-            </g>
-
-            {/* Primary Arterial Roads */}
-            <g stroke="#FFFFFF" strokeWidth="9" strokeLinecap="round">
-              <path d="M-10 142 L910 132" />
-              <path d="M-10 232 L910 218" />
-              <path d="M230 -10 L258 450" />
-              <path d="M565 -10 L542 450" />
-              <path d="M90 420 L485 135 L860 90" fill="none" />
-            </g>
-            <g stroke="#CBD5E1" strokeWidth="1.5" strokeDasharray="6 6" fill="none">
-              <path d="M-10 142 L910 132" />
-              <path d="M565 -10 L542 450" />
-            </g>
-
-            {/* Ward & Sector Cartographic Labels */}
-            <g
-              fill="#4B6358"
-              fontFamily="'Plus Jakarta Sans', sans-serif"
-              fontSize="11"
-              fontWeight="700"
-              letterSpacing="0.06em"
-            >
-              <text x="94" y="88">WARD 1 · CIVIC CENTER</text>
-              <text x="342" y="122">WARD 4 · GREENPARK AVE</text>
-              <text x="678" y="106">WARD 2 · CENTRAL MARKET</text>
-              <text x="98" y="305">WARD 7 · RIVERSIDE</text>
-              <text x="635" y="388">WARD 5 · INDUSTRIAL BELT</text>
-            </g>
-          </svg>
-
-          {/* Complaint Location Pins */}
-          {complaints.map((c) => {
-            const pos = projectToPercent(c.coordinates);
-            const isSelected = c.id === selectedComplaintId;
-            const color = CATEGORY_COLORS[c.category];
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectComplaint?.(c);
-                }}
-                style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-                aria-label={`Select complaint ${c.id}: ${c.locationName}`}
-                className={`group absolute -translate-x-1/2 -translate-y-full transition-transform duration-150 ${
-                  isSelected ? 'z-20 scale-115' : 'z-10 hover:scale-110'
-                }`}
-              >
-                <div
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-white shadow-md transition-colors ${
-                    isSelected ? 'ring-2 ring-[#022C22] ring-offset-1' : ''
-                  }`}
-                  style={{ backgroundColor: isSelected ? '#022C22' : color }}
-                >
-                  <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span className="font-mono whitespace-nowrap">{c.id.slice(-4)}</span>
-                </div>
-                <div
-                  className="mx-auto h-2 w-2 -translate-y-1 rotate-45"
-                  style={{ backgroundColor: isSelected ? '#022C22' : color }}
-                />
-              </button>
-            );
-          })}
-
-          {/* Picker Pin (Report Garbage mode) */}
           {pickerMode && pickedCoordinates && (
-            <div
-              style={{
-                left: `${projectToPercent(pickedCoordinates).x}%`,
-                top: `${projectToPercent(pickedCoordinates).y}%`,
+            <Marker
+              position={[pickedCoordinates.lat, pickedCoordinates.lng]}
+              icon={pickerIcon}
+              draggable={true}
+              eventHandlers={{
+                dragend(e) {
+                  if (!onPickCoordinates) return;
+                  const pos = (e.target as L.Marker).getLatLng();
+                  onPickCoordinates({
+                    lat: Number(pos.lat.toFixed(6)),
+                    lng: Number(pos.lng.toFixed(6)),
+                  });
+                },
               }}
-              className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full"
             >
-              <div className="flex items-center gap-1 rounded-lg bg-[#064E3B] px-2.5 py-1 text-xs font-semibold text-white shadow-lg ring-2 ring-[#A7F3D0]">
-                <Crosshair className="h-3.5 w-3.5 text-[#A7F3D0]" aria-hidden="true" />
-                <span>Pinned Spot</span>
-              </div>
-              <div className="mx-auto h-2 w-2 -translate-y-1 rotate-45 bg-[#064E3B]" />
-            </div>
+              <Tooltip direction="top" offset={[0, -40]} opacity={0.95}>
+                Selected waste location (drag to fine-tune)
+              </Tooltip>
+            </Marker>
           )}
-        </div>
 
-        {/* Zoom Controls */}
-        <div className="absolute right-3 top-3 z-30 flex flex-col overflow-hidden rounded-lg border border-[#D4E2DA] bg-white/95 shadow-sm backdrop-blur-xs">
+          {!pickerMode &&
+            complaints.map((c) => {
+              const isSelected = c.id === selectedComplaintId;
+              const color = CATEGORY_COLORS[c.category];
+              const icon = createComplaintDivIcon(c.id.slice(-4), color, isSelected);
+              return (
+                <Marker
+                  key={c.id}
+                  position={[c.coordinates.lat, c.coordinates.lng]}
+                  icon={icon}
+                  eventHandlers={{
+                    click() {
+                      onSelectComplaint?.(c);
+                    },
+                  }}
+                >
+                  <Tooltip direction="top" offset={[0, -32]} opacity={0.95}>
+                    {c.id}: {c.locationName}
+                  </Tooltip>
+                </Marker>
+              );
+            })}
+        </MapContainer>
+
+        {/* Custom Zoom Controls */}
+        <div className="absolute right-3 top-3 z-[450] flex flex-col overflow-hidden rounded-lg border border-[#D4E2DA] bg-white/95 shadow-sm backdrop-blur-xs">
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setZoom((z) => Math.min(1.6, Number((z + 0.15).toFixed(2))));
-            }}
+            onClick={() => mapRef.current?.zoomIn()}
             aria-label="Zoom in map"
             className="flex h-8 w-8 items-center justify-center text-[#064E3B] hover:bg-[#F5F8F6] transition-colors"
           >
@@ -227,10 +266,7 @@ export function InteractiveCityMap({
           <div className="h-px bg-[#E5ECE8]" />
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setZoom((z) => Math.max(0.9, Number((z - 0.15).toFixed(2))));
-            }}
+            onClick={() => mapRef.current?.zoomOut()}
             aria-label="Zoom out map"
             className="flex h-8 w-8 items-center justify-center text-[#064E3B] hover:bg-[#F5F8F6] transition-colors"
           >
@@ -239,15 +275,24 @@ export function InteractiveCityMap({
         </div>
 
         {/* Coordinate Footer Bar */}
-        <div className="absolute bottom-3 left-3 right-3 z-20 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#D4E2DA] bg-white/95 px-3 py-2 text-xs text-[#1F2937] shadow-xs backdrop-blur-xs">
+        <div className="absolute bottom-3 left-3 right-3 z-[450] flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#D4E2DA] bg-white/95 px-3 py-2 text-xs text-[#1F2937] shadow-xs backdrop-blur-xs">
           <div className="flex items-center gap-2 font-mono tabular-nums text-[11px] text-[#374151]">
             <MapPin className="h-3.5 w-3.5 text-[#059669] shrink-0" aria-hidden="true" />
-            <span>
-              Lat {activeCoords.lat.toFixed(5)}, Lng {activeCoords.lng.toFixed(5)}
-            </span>
-            {pickerMode && (
-              <span className="font-sans text-[#064E3B] font-medium">
-                · Click anywhere on map to adjust pin
+            {activeCoords ? (
+              <span>
+                Lat {activeCoords.lat.toFixed(5)}, Lng {activeCoords.lng.toFixed(5)}
+                {pickerMode && (
+                  <span className="font-sans text-[#064E3B] font-medium">
+                    {' '}
+                    · Click map or drag pin to adjust
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="font-sans text-[#4B5563]">
+                {pickerMode
+                  ? 'No location selected · Search, click the map, or use current location'
+                  : 'No complaint coordinates to display'}
               </span>
             )}
           </div>
@@ -255,7 +300,6 @@ export function InteractiveCityMap({
             href={osmUrl}
             target="_blank"
             rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
             className="inline-flex items-center gap-1 font-medium text-[#064E3B] hover:text-[#059669] whitespace-nowrap"
           >
             <span>OpenStreetMap</span>

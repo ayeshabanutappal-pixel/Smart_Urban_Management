@@ -1,13 +1,25 @@
 import { useMemo, useState } from 'react';
-import { ArrowRight, Calendar, MapPin, PlusCircle, Search, UserCheck } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowRight,
+  Calendar,
+  Loader2,
+  MapPin,
+  PlusCircle,
+  Search,
+  UserCheck,
+} from 'lucide-react';
 import { ComplaintStatusLabel, WasteCategoryText } from '../components/StatusText';
 import type { Complaint, ComplaintStatus, PageRoute, UserProfile } from '../types/waste';
-import { filterComplaints } from '../utils/wasteLogic';
+import { filterComplaints, formatDisplayTimestamp } from '../utils/wasteLogic';
 
 interface MyComplaintsPageProps {
   user: UserProfile;
   complaints: Complaint[];
   globalSearch: string;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   onTrackComplaint: (id: string) => void;
   onNavigate: (page: PageRoute) => void;
 }
@@ -16,6 +28,9 @@ export function MyComplaintsPage({
   user,
   complaints,
   globalSearch,
+  loading = false,
+  error = null,
+  onRetry,
   onTrackComplaint,
   onNavigate,
 }: MyComplaintsPageProps) {
@@ -24,16 +39,17 @@ export function MyComplaintsPage({
 
   const myList = useMemo(() => {
     const query = localSearch.trim() || globalSearch;
-    const citizenOwned = complaints.filter((c) => c.citizenId === user.id);
-    const source = citizenOwned.length > 0 ? citizenOwned : complaints;
-    return filterComplaints(source, { search: query, status: statusFilter });
-  }, [complaints, user.id, localSearch, globalSearch, statusFilter]);
+    const citizenOwned =
+      user.role === 'citizen' ? complaints.filter((c) => c.citizenId === user.id) : complaints;
+    return filterComplaints(citizenOwned, { search: query, status: statusFilter });
+  }, [complaints, user.id, user.role, localSearch, globalSearch, statusFilter]);
 
   const statuses: Array<ComplaintStatus | 'All'> = [
     'All',
     'Pending',
     'Assigned',
     'In Progress',
+    'Pending Verification',
     'Resolved',
   ];
 
@@ -58,6 +74,27 @@ export function MyComplaintsPage({
           <span>New Report</span>
         </button>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700"
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Filters Bar */}
       <div className="flex flex-col gap-3 rounded-2xl border border-[#E2EAE5] bg-white p-4 md:flex-row md:items-center md:justify-between">
@@ -92,13 +129,20 @@ export function MyComplaintsPage({
       </div>
 
       {/* Cards Grid */}
-      {myList.length === 0 ? (
+      {loading && complaints.length === 0 ? (
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-[#E2EAE5] bg-white px-6 py-16 text-sm text-[#6B7280]">
+          <Loader2 className="h-5 w-5 animate-spin text-[#059669]" />
+          <span>Loading your complaints...</span>
+        </div>
+      ) : myList.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-[#C7DBD0] bg-white px-6 py-16 text-center">
           <p className="font-display text-base font-bold text-[#022C22]">
-            No matching complaints found
+            {complaints.length === 0 ? 'No complaints submitted yet' : 'No matching complaints found'}
           </p>
           <p className="mt-1 text-xs text-[#6B7280]">
-            Adjust your status filter or file a new roadside garbage report.
+            {complaints.length === 0
+              ? 'File a roadside garbage report to begin tracking municipal cleanup.'
+              : 'Adjust your status filter or file a new roadside garbage report.'}
           </p>
           <button
             type="button"
@@ -151,7 +195,7 @@ export function MyComplaintsPage({
                   <p className="flex items-center gap-2">
                     <Calendar className="h-3.5 w-3.5 shrink-0 text-[#059669]" />
                     <span className="font-mono text-[11px] tabular-nums">
-                      {complaint.reportedAt}
+                      {formatDisplayTimestamp(complaint.reportedAt)}
                     </span>
                   </p>
                   <p className="flex items-center gap-2">
@@ -182,3 +226,4 @@ export function MyComplaintsPage({
     </div>
   );
 }
+

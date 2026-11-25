@@ -1,8 +1,13 @@
-export type UserRole = 'citizen' | 'admin';
+export type UserRole = 'citizen' | 'admin' | 'worker';
 
 export type WasteCategory = 'Organic' | 'Plastic' | 'Metal' | 'Others';
 
-export type ComplaintStatus = 'Pending' | 'Assigned' | 'In Progress' | 'Resolved';
+export type ComplaintStatus =
+  | 'Pending'
+  | 'Assigned'
+  | 'In Progress'
+  | 'Pending Verification'
+  | 'Resolved';
 
 export type AnalyticsRange = '7d' | '30d' | '6m';
 
@@ -14,6 +19,7 @@ export type PageRoute =
   | 'all-complaints'
   | 'track-complaints'
   | 'assign-workers'
+  | 'manage-workers'
   | 'analytics'
   | 'reports'
   | 'notifications'
@@ -27,7 +33,14 @@ export interface UserProfile {
   role: UserRole;
   phone: string;
   ward: string;
+  preferredLanguage?: string;
+  workerId?: string;
   joinedAt: string;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: UserProfile;
 }
 
 export interface Coordinates {
@@ -72,11 +85,16 @@ export interface Complaint {
   ward: string;
   coordinates: Coordinates;
   imageUrl: string;
+  afterImageUrl?: string | null;
   reportedAt: string;
   updatedAt: string;
+  completedAt?: string | null;
+  verifiedAt?: string | null;
   assignedWorkerId: string | null;
   assignedWorkerName: string | null;
   estimatedWeightKg: number;
+  completionNotes?: string | null;
+  rejectionReason?: string | null;
   resolutionNotes?: string;
 }
 
@@ -90,6 +108,62 @@ export interface Worker {
   activeTasks: number;
   completedCount: number;
   vehicleCode: string;
+  isActive: boolean;
+  userId?: string | null;
+  email?: string | null;
+}
+
+export interface WorkerTasksResponse {
+  worker: Worker;
+  tasks: Complaint[];
+  counts: {
+    assigned: number;
+    inProgress: number;
+    pendingVerification: number;
+    completed: number;
+    total: number;
+  };
+}
+
+export interface RawCocoDetection {
+  class_name: string;
+  confidence: number; // 0.0 - 1.0
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2] pixels
+}
+
+export interface LiveDetectResponse {
+  success: boolean;
+  detected: boolean;
+  detections: RawCocoDetection[];
+  totalDetections: number;
+  imageDimensions: [number, number] | null; // [width, height]
+  annotatedImageUrl: string | null;
+  modelEngine: string;
+  isMockResult: boolean;
+  error: string | null;
+}
+
+export interface LiveAiDetectionResult {
+  detected: boolean;
+  detections: RawCocoDetection[];
+  totalDetections: number;
+  topLabel: string | null;
+  topConfidencePct: number; // 0 - 100
+  imageDimensions: [number, number] | null;
+  boundingBoxes: BoundingBox[]; // percentage boxes derived from pixel bbox + imageDimensions
+  annotatedImageUrl: string | null;
+  modelEngine: string;
+  analyzedAt: string;
+}
+
+export interface AiDetectStatus {
+  yoloInstalled?: boolean;
+  modelConfigured: boolean;
+  modelLoaded?: boolean;
+  available: boolean;
+  mode: string;
+  engine: string;
+  autoResolveSupported: boolean;
 }
 
 export interface NotificationItem {
@@ -114,7 +188,7 @@ export interface AppSettings {
 
 export interface BackendStatus {
   connected: boolean;
-  mode: 'live-flask' | 'demo-local';
+  mode: 'live-flask' | 'offline-local';
   lastCheckedAt: string;
   message: string;
 }
@@ -156,4 +230,38 @@ export interface AnalyticsSnapshot {
   totalComplaints: number;
   resolvedComplaints: number;
   resolutionRate: number;
+}
+
+export interface ActivityLogItem {
+  id: string;
+  complaintId: string | null;
+  status: ComplaintStatus;
+  note: string | null;
+  changedAt: string;
+}
+
+export interface DashboardSummary {
+  metrics: DashboardMetrics;
+  categoryDistribution: Array<{ category: WasteCategory; count: number }>;
+  recentActivity: ActivityLogItem[];
+  recentComplaints: Complaint[];
+}
+
+export interface ComplaintStatusLogItem {
+  id: string;
+  complaintId: string;
+  changedByUserId: string;
+  status: ComplaintStatus;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface ComplaintDetailResponse {
+  complaint: Complaint;
+  statusLogs: ComplaintStatusLogItem[];
+}
+
+export interface ComplaintsListResponse {
+  complaints: Complaint[];
+  total: number;
 }

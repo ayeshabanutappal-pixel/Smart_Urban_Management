@@ -4,6 +4,7 @@ import type {
   CategoryDistributionItem,
   Complaint,
   ComplaintStatus,
+  ComplaintStatusLogItem,
   DashboardMetrics,
   DetectionResult,
   WasteCategory,
@@ -228,6 +229,18 @@ export function computeAnalyticsForRange(
   };
 }
 
+export function formatDisplayTimestamp(value: string): string {
+  if (!value || !value.includes('T')) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const hours = String(parsed.getHours()).padStart(2, '0');
+  const minutes = String(parsed.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
 export interface TimelineStep {
   key: 'reported' | 'detected' | 'assigned' | 'resolved';
   label: string;
@@ -237,14 +250,29 @@ export interface TimelineStep {
   timestamp: string;
 }
 
-export function getComplaintTimeline(complaint: Complaint): TimelineStep[] {
+export function getComplaintTimeline(
+  complaint: Complaint,
+  statusLogs?: ComplaintStatusLogItem[]
+): TimelineStep[] {
   const statusRank: Record<ComplaintStatus, number> = {
     Pending: 1,
     Assigned: 2,
     'In Progress': 2,
+    'Pending Verification': 2,
     Resolved: 3,
   };
   const rank = statusRank[complaint.status];
+
+  const pendingLog = statusLogs?.find((l) => l.status === 'Pending');
+  const dispatchLog = [...(statusLogs ?? [])]
+    .reverse()
+    .find(
+      (l) =>
+        l.status === 'Assigned' ||
+        l.status === 'In Progress' ||
+        l.status === 'Pending Verification'
+    );
+  const resolvedLog = [...(statusLogs ?? [])].reverse().find((l) => l.status === 'Resolved');
 
   return [
     {
@@ -253,7 +281,7 @@ export function getComplaintTimeline(complaint: Complaint): TimelineStep[] {
       description: `Reported by ${complaint.citizenName} at ${complaint.locationName}`,
       completed: true,
       active: rank === 0,
-      timestamp: complaint.reportedAt,
+      timestamp: formatDisplayTimestamp(pendingLog?.createdAt || complaint.reportedAt),
     },
     {
       key: 'detected',
@@ -263,28 +291,41 @@ export function getComplaintTimeline(complaint: Complaint): TimelineStep[] {
         : `Categorized under ${complaint.category} waste stream`,
       completed: true,
       active: rank === 1,
-      timestamp: complaint.reportedAt,
+      timestamp: formatDisplayTimestamp(complaint.reportedAt),
     },
     {
       key: 'assigned',
       label: 'Municipal Worker Assigned',
-      description: complaint.assignedWorkerName
-        ? `Dispatched to ${complaint.assignedWorkerName} (${complaint.ward})`
-        : 'Awaiting dispatch assignment from municipal office',
+      description:
+        complaint.status === 'Pending Verification'
+          ? `${complaint.assignedWorkerName ?? 'Worker'} uploaded after-cleaning photo for admin review`
+          : complaint.assignedWorkerName
+          ? `Dispatched to ${complaint.assignedWorkerName} (${complaint.ward})`
+          : dispatchLog?.note || 'Awaiting dispatch assignment from municipal office',
       completed: rank >= 2,
       active: rank === 2,
-      timestamp: rank >= 2 ? complaint.updatedAt : 'Pending',
+      timestamp:
+        rank >= 2
+          ? formatDisplayTimestamp(dispatchLog?.createdAt || complaint.updatedAt)
+          : 'Pending',
     },
     {
       key: 'resolved',
       label: 'Site Cleared & Resolved',
       description:
         complaint.status === 'Resolved'
-          ? complaint.resolutionNotes || 'Waste cleared and area verified clean.'
+          ? complaint.resolutionNotes ||
+            resolvedLog?.note ||
+            'Waste cleared and area verified clean.'
+          : complaint.status === 'Pending Verification'
+          ? 'After-cleaning photograph submitted — awaiting admin verification'
           : 'Completion verification pending field team sign-off',
       completed: rank >= 3,
       active: rank === 3,
-      timestamp: rank >= 3 ? complaint.updatedAt : 'Not yet resolved',
+      timestamp:
+        rank >= 3
+          ? formatDisplayTimestamp(resolvedLog?.createdAt || complaint.updatedAt)
+          : 'Not yet resolved',
     },
   ];
 }
@@ -294,13 +335,19 @@ export function validateAuthForm(input: {
   name?: string;
   email: string;
   password: string;
+  allowPhoneIdentifier?: boolean;
 }): string | null {
   if (input.mode === 'register' && (!input.name || input.name.trim().length < 2)) {
     return 'Please enter your full name (at least 2 characters).';
   }
   const emailTrimmed = input.email.trim();
-  if (!emailTrimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed)) {
-    return 'Please enter a valid email address.';
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed);
+  const isPhone =
+    Boolean(input.allowPhoneIdentifier) && /^\+?[\d\s\-().]{7,20}$/.test(emailTrimmed);
+  if (!emailTrimmed || (!isEmail && !isPhone)) {
+    return input.allowPhoneIdentifier
+      ? 'Please enter a valid worker phone number or email address.'
+      : 'Please enter a valid email address.';
   }
   if (!input.password || input.password.length < 6) {
     return 'Password must be at least 6 characters long.';

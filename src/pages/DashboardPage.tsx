@@ -1,10 +1,12 @@
 import { useMemo } from 'react';
 import {
+  AlertCircle,
   ArrowRight,
   CheckCircle2,
   ClipboardList,
   Clock,
   Leaf,
+  Loader2,
   MapPin,
   PlusCircle,
   ScanSearch,
@@ -14,30 +16,77 @@ import {
 import type { ChartConfiguration } from 'chart.js';
 import { ChartCanvas } from '../components/ChartCanvas';
 import { ComplaintStatusLabel, WasteCategoryText } from '../components/StatusText';
-import type { Complaint, PageRoute, UserProfile } from '../types/waste';
+import type {
+  Complaint,
+  DashboardMetrics,
+  DashboardSummary,
+  PageRoute,
+  UserProfile,
+  WasteCategory,
+} from '../types/waste';
 import {
-  computeCategoryDistribution,
-  computeDashboardMetrics,
+  CATEGORY_COLORS,
+  formatDisplayTimestamp,
 } from '../utils/wasteLogic';
+
+const EMPTY_METRICS: DashboardMetrics = {
+  totalComplaints: 0,
+  wasteDetectedCount: 0,
+  resolvedIssues: 0,
+  pendingComplaints: 0,
+  inProgressCount: 0,
+  resolutionRate: 0,
+  totalEstimatedKg: 0,
+};
+
+const EMPTY_CATEGORIES: WasteCategory[] = ['Organic', 'Plastic', 'Metal', 'Others'];
 
 interface DashboardPageProps {
   user: UserProfile;
-  complaints: Complaint[];
+  complaints?: Complaint[];
+  /** Live summary from Flask /api/dashboard/summary — null while loading or on error */
+  dashboardSummary?: DashboardSummary | null;
+  /** True while the initial fetch is in flight */
+  dashboardLoading?: boolean;
+  /** Error message when /api/dashboard/summary fails */
+  dashboardError?: string | null;
+  /** Callback to retry loading dashboard data */
+  onRetryDashboard?: () => void;
   onNavigate: (page: PageRoute) => void;
   onTrackComplaint: (complaintId: string) => void;
 }
 
 export function DashboardPage({
   user,
-  complaints,
+  dashboardSummary,
+  dashboardLoading = false,
+  dashboardError = null,
+  onRetryDashboard,
   onNavigate,
   onTrackComplaint,
 }: DashboardPageProps) {
-  const metrics = useMemo(() => computeDashboardMetrics(complaints), [complaints]);
-  const distribution = useMemo(
-    () => computeCategoryDistribution(complaints),
-    [complaints]
+  const metrics = useMemo(
+    () => dashboardSummary?.metrics ?? EMPTY_METRICS,
+    [dashboardSummary]
   );
+
+  const distribution = useMemo(() => {
+    if (dashboardSummary?.categoryDistribution) {
+      const total = dashboardSummary.categoryDistribution.reduce((s, d) => s + d.count, 0);
+      return dashboardSummary.categoryDistribution.map((d) => ({
+        category: d.category,
+        count: d.count,
+        percentage: total === 0 ? 0 : Math.round((d.count / total) * 100),
+        color: CATEGORY_COLORS[d.category],
+      }));
+    }
+    return EMPTY_CATEGORIES.map((category) => ({
+      category,
+      count: 0,
+      percentage: 0,
+      color: CATEGORY_COLORS[category],
+    }));
+  }, [dashboardSummary]);
 
   const doughnutConfig = useMemo<ChartConfiguration<'doughnut'>>(
     () => ({
@@ -79,21 +128,31 @@ export function DashboardPage({
   );
 
   const recentActivity = useMemo(() => {
-    return complaints.slice(0, 5).map((c) => {
-      let actionLabel = 'Newly reported garbage';
-      if (c.status === 'Resolved') actionLabel = 'Resolved complaint';
-      else if (c.status === 'In Progress') actionLabel = 'Sanitation crew on site';
-      else if (c.status === 'Assigned') actionLabel = `Assigned to ${c.assignedWorkerName}`;
+    if (!dashboardSummary) return [];
+    return (dashboardSummary.recentActivity ?? []).map((log) => {
+      let actionLabel = 'Status updated';
+      if (log.status === 'Resolved') actionLabel = 'Resolved complaint';
+      else if (log.status === 'Pending Verification') actionLabel = 'Cleanup awaiting verification';
+      else if (log.status === 'In Progress') actionLabel = 'Sanitation crew on site';
+      else if (log.status === 'Assigned') actionLabel = 'Worker assigned';
+      else if (log.status === 'Pending') actionLabel = 'Newly reported garbage';
       return {
-        id: c.id,
+        logKey: log.id,
+        id: log.complaintId ?? log.id,
+        canTrack: Boolean(log.complaintId),
         actionLabel,
-        title: c.title,
-        location: c.locationName,
-        status: c.status,
-        time: c.updatedAt,
+        title: log.note ?? `Complaint ${log.complaintId ?? log.id}`,
+        location: '',
+        status: log.status,
+        time: formatDisplayTimestamp(log.changedAt),
       };
     });
-  }, [complaints]);
+  }, [dashboardSummary]);
+
+  const recentComplaints = useMemo(
+    () => dashboardSummary?.recentComplaints ?? [],
+    [dashboardSummary]
+  );
 
   const statCards = [
     {
@@ -178,30 +237,72 @@ export function DashboardPage({
         </div>
       </section>
 
+      {dashboardError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700"
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{dashboardError}</span>
+          </span>
+          {onRetryDashboard && (
+            <button
+              type="button"
+              onClick={onRetryDashboard}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 4 KPI Statistics Cards */}
       <section aria-label="Key Waste Statistics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {statCards.map((card) => {
-          const Icon = card.icon;
-          return (
-            <div
-              key={card.label}
-              className="flex items-start justify-between rounded-2xl border border-[#E2EAE5] bg-white p-5 transition-colors hover:border-[#059669]/35"
-            >
-              <div>
-                <p className="text-xs font-semibold text-[#4B5563]">{card.label}</p>
-                <p className="mt-2 font-display text-3xl font-extrabold text-[#022C22] tabular-nums">
-                  {card.value}
-                </p>
-                <p className="mt-1.5 text-xs text-[#6B7280]">{card.subtext}</p>
-              </div>
-              <div
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${card.accentBg}`}
-              >
-                <Icon className="h-5 w-5" aria-hidden="true" />
-              </div>
-            </div>
-          );
-        })}
+        {dashboardLoading
+          ? statCards.map((card) => {
+              const Icon = card.icon;
+              return (
+                <div
+                  key={card.label}
+                  className="flex items-start justify-between rounded-2xl border border-[#E2EAE5] bg-white p-5"
+                >
+                  <div>
+                    <p className="text-xs font-semibold text-[#4B5563]">{card.label}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Loader2 className="h-6 w-6 animate-spin text-[#059669]" aria-hidden="true" />
+                    </div>
+                    <p className="mt-1.5 text-xs text-[#E2EAE5]">Loading…</p>
+                  </div>
+                  <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${card.accentBg}`}>
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                </div>
+              );
+            })
+          : statCards.map((card) => {
+              const Icon = card.icon;
+              return (
+                <div
+                  key={card.label}
+                  className="flex items-start justify-between rounded-2xl border border-[#E2EAE5] bg-white p-5 transition-colors hover:border-[#059669]/35"
+                >
+                  <div>
+                    <p className="text-xs font-semibold text-[#4B5563]">{card.label}</p>
+                    <p className="mt-2 font-display text-3xl font-extrabold text-[#022C22] tabular-nums">
+                      {card.value}
+                    </p>
+                    <p className="mt-1.5 text-xs text-[#6B7280]">{card.subtext}</p>
+                  </div>
+                  <div
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${card.accentBg}`}
+                  >
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                </div>
+              );
+            })}
       </section>
 
       {/* Core 2-Column Section: Waste Overview (Doughnut) + Recent Activity */}
@@ -323,9 +424,9 @@ export function DashboardPage({
           <div className="mt-5 divide-y divide-[#EEF3F0]">
             {recentActivity.map((act) => (
               <button
-                key={act.id}
+                key={act.logKey}
                 type="button"
-                onClick={() => onTrackComplaint(act.id)}
+                onClick={() => act.canTrack && onTrackComplaint(act.id)}
                 className="flex w-full items-start justify-between gap-4 py-3 text-left transition-colors hover:bg-[#F5F8F6] rounded-lg px-2 -mx-2"
               >
                 <div className="min-w-0">
@@ -337,7 +438,9 @@ export function DashboardPage({
                   <p className="mt-1 text-sm font-semibold text-[#1F2937] truncate">
                     {act.title}
                   </p>
-                  <p className="mt-0.5 text-xs text-[#6B7280] truncate">{act.location}</p>
+                  {act.location && (
+                    <p className="mt-0.5 text-xs text-[#6B7280] truncate">{act.location}</p>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
                   <ComplaintStatusLabel status={act.status} />
@@ -347,6 +450,15 @@ export function DashboardPage({
                 </div>
               </button>
             ))}
+            {recentActivity.length === 0 && (
+              <p className="py-8 text-center text-sm text-[#6B7280]">
+                {dashboardLoading
+                  ? 'Loading activity…'
+                  : dashboardError
+                  ? 'Unable to load recent activity.'
+                  : 'No recent activity yet. Status updates and assignments will appear here.'}
+              </p>
+            )}
           </div>
         </div>
       </section>
@@ -460,7 +572,7 @@ export function DashboardPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EEF3F0]">
-              {complaints.slice(0, 6).map((c) => (
+              {recentComplaints.map((c) => (
                 <tr
                   key={c.id}
                   onClick={() => onTrackComplaint(c.id)}
@@ -500,10 +612,24 @@ export function DashboardPage({
                     <ComplaintStatusLabel status={c.status} />
                   </td>
                   <td className="px-6 py-3.5 text-right font-mono text-xs text-[#6B7280] tabular-nums whitespace-nowrap">
-                    {c.reportedAt}
+                    {formatDisplayTimestamp(c.reportedAt)}
                   </td>
                 </tr>
               ))}
+              {recentComplaints.length === 0 && !dashboardLoading && (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-6 py-10 text-center text-sm text-[#6B7280]"
+                  >
+                    {dashboardError
+                      ? 'Unable to load complaints.'
+                      : dashboardSummary
+                      ? 'No complaints submitted yet. Use "Report Garbage" to file your first report.'
+                      : 'Loading complaints…'}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

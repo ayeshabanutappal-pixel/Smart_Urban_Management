@@ -10,6 +10,7 @@ import {
   ScanSearch,
   Settings,
   User,
+  UserCog,
   Users,
   X,
 } from 'lucide-react';
@@ -39,6 +40,7 @@ const ADMIN_MENU: NavItem[] = [
   { id: 'detect-waste', label: 'Detect Waste', icon: ScanSearch },
   { id: 'track-complaints', label: 'Track Complaints', icon: MapPin },
   { id: 'assign-workers', label: 'Assign Workers', icon: Users },
+  { id: 'manage-workers', label: 'Manage Workers', icon: UserCog },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
   { id: 'settings', label: 'Settings', icon: Settings },

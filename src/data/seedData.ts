@@ -6,7 +6,7 @@ import type {
   Worker,
 } from '../types/waste';
 
-export const DEMO_CITIZEN_USER: UserProfile = {
+export const SEED_CITIZEN_USER: UserProfile = {
   id: 'cit-101',
   name: 'Aarav Sharma',
   email: 'citizen@wastesmart.city',
@@ -16,7 +16,7 @@ export const DEMO_CITIZEN_USER: UserProfile = {
   joinedAt: '2026-06-14',
 };
 
-export const DEMO_ADMIN_USER: UserProfile = {
+export const SEED_ADMIN_USER: UserProfile = {
   id: 'adm-001',
   name: 'Priya Menon',
   email: 'admin@wastesmart.city',
@@ -26,8 +26,14 @@ export const DEMO_ADMIN_USER: UserProfile = {
   joinedAt: '2025-11-01',
 };
 
+// Legacy aliases — do not use in new code
+/** @deprecated use SEED_CITIZEN_USER */
+export const DEMO_CITIZEN_USER = SEED_CITIZEN_USER;
+/** @deprecated use SEED_ADMIN_USER */
+export const DEMO_ADMIN_USER = SEED_ADMIN_USER;
+
 export const DEFAULT_SETTINGS: AppSettings = {
-  flaskApiBaseUrl: 'http://localhost:5000',
+  flaskApiBaseUrl: 'http://127.0.0.1:5000',
   useLiveFlaskApi: false,
   emailAlerts: true,
   statusPushAlerts: true,
@@ -46,6 +52,7 @@ export const SEED_WORKERS: Worker[] = [
     activeTasks: 1,
     completedCount: 68,
     vehicleCode: 'EV-SAN-04',
+    isActive: true,
   },
   {
     id: 'wrk-102',
@@ -57,6 +64,7 @@ export const SEED_WORKERS: Worker[] = [
     activeTasks: 2,
     completedCount: 84,
     vehicleCode: 'BIO-TRK-11',
+    isActive: true,
   },
   {
     id: 'wrk-103',
@@ -68,6 +76,7 @@ export const SEED_WORKERS: Worker[] = [
     activeTasks: 1,
     completedCount: 52,
     vehicleCode: 'MRF-VAN-09',
+    isActive: true,
   },
   {
     id: 'wrk-104',
@@ -79,6 +88,7 @@ export const SEED_WORKERS: Worker[] = [
     activeTasks: 0,
     completedCount: 41,
     vehicleCode: 'FLT-BED-02',
+    isActive: true,
   },
   {
     id: 'wrk-105',
@@ -90,6 +100,7 @@ export const SEED_WORKERS: Worker[] = [
     activeTasks: 0,
     completedCount: 73,
     vehicleCode: 'RAP-EV-06',
+    isActive: true,
   },
 ];
 

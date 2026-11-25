@@ -1,24 +1,36 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   Calendar,
   CheckCircle2,
   Circle,
   Clock,
   Info,
+  Loader2,
   MapPin,
   Search,
   UserCheck,
 } from 'lucide-react';
 import { InteractiveCityMap } from '../components/InteractiveCityMap';
 import { ComplaintStatusLabel, WasteCategoryText } from '../components/StatusText';
-import type { BackendStatus, Complaint } from '../types/waste';
-import { filterComplaints, getComplaintTimeline } from '../utils/wasteLogic';
+import { fetchComplaintDetail } from '../services/flaskApi';
+import type { BackendStatus, Complaint, ComplaintStatusLogItem } from '../types/waste';
+import {
+  filterComplaints,
+  formatDisplayTimestamp,
+  getComplaintTimeline,
+} from '../utils/wasteLogic';
 
 interface TrackComplaintsPageProps {
   complaints: Complaint[];
   selectedComplaintId: string | null;
   onSelectComplaintId: (id: string) => void;
   backendStatus: BackendStatus;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
+  flaskApiBaseUrl?: string;
+  onSessionExpired?: () => void;
 }
 
 export function TrackComplaintsPage({
@@ -26,15 +38,27 @@ export function TrackComplaintsPage({
   selectedComplaintId,
   onSelectComplaintId,
   backendStatus,
+  loading = false,
+  error = null,
+  onRetry,
+  flaskApiBaseUrl,
+  onSessionExpired,
 }: TrackComplaintsPageProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [detailState, setDetailState] = useState<{
+    complaintId: string;
+    complaint?: Complaint;
+    statusLogs: ComplaintStatusLogItem[];
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
 
   const filtered = useMemo(
     () => filterComplaints(complaints, { search: searchTerm }),
     [complaints, searchTerm]
   );
 
-  const activeComplaint = useMemo(() => {
+  const activeComplaintBase = useMemo(() => {
     if (selectedComplaintId) {
       const exact = complaints.find((c) => c.id === selectedComplaintId);
       if (exact) return exact;
@@ -42,9 +66,62 @@ export function TrackComplaintsPage({
     return filtered[0] ?? complaints[0] ?? null;
   }, [complaints, filtered, selectedComplaintId]);
 
+  const activeComplaintId = activeComplaintBase?.id ?? null;
+
+  useEffect(() => {
+    if (!activeComplaintId || !flaskApiBaseUrl) {
+      setDetailState(null);
+      return;
+    }
+
+    let active = true;
+    setDetailState({
+      complaintId: activeComplaintId,
+      statusLogs: [],
+      loading: true,
+      error: null,
+    });
+
+    void fetchComplaintDetail(flaskApiBaseUrl, activeComplaintId, onSessionExpired)
+      .then((res) => {
+        if (active) {
+          setDetailState({
+            complaintId: activeComplaintId,
+            complaint: res.complaint,
+            statusLogs: res.statusLogs,
+            loading: false,
+            error: null,
+          });
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          setDetailState({
+            complaintId: activeComplaintId,
+            statusLogs: [],
+            loading: false,
+            error:
+              err instanceof Error ? err.message : 'Unable to load complaint timeline details.',
+          });
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeComplaintId, activeComplaintBase?.updatedAt, flaskApiBaseUrl, onSessionExpired]);
+
+  const activeComplaint =
+    detailState?.complaintId === activeComplaintBase?.id && detailState?.complaint
+      ? detailState.complaint
+      : activeComplaintBase;
+
+  const activeStatusLogs =
+    detailState?.complaintId === activeComplaint?.id ? detailState?.statusLogs : undefined;
+
   const timeline = useMemo(
-    () => (activeComplaint ? getComplaintTimeline(activeComplaint) : []),
-    [activeComplaint]
+    () => (activeComplaint ? getComplaintTimeline(activeComplaint, activeStatusLogs) : []),
+    [activeComplaint, activeStatusLogs]
   );
 
   // Complaint status counts derived strictly from real complaint records (no invented IoT bin metrics)
@@ -76,12 +153,33 @@ export function TrackComplaintsPage({
             type="search"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Lookup Complaint ID (e.g. 1048)..."
+            placeholder="Lookup Complaint ID (e.g. 1001)..."
             aria-label="Search complaints to track"
             className="w-full rounded-xl border border-[#DCE6E0] bg-white py-2.5 pl-9 pr-3 text-xs text-[#1F2937] focus:border-[#059669]"
           />
         </div>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700"
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{error}</span>
+          </span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Top Row: Interactive Map + Recorded Complaint Status Panel */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
@@ -102,7 +200,7 @@ export function TrackComplaintsPage({
           <p className="mt-0.5 text-xs text-[#6B7280]">
             {backendStatus.connected
               ? 'Live records from Flask / MySQL database'
-              : 'Recorded citizen reports (Demo Mode — no fabricated live GPS telemetry)'}
+              : 'Live API sync status (checking Flask connection)'}
           </p>
 
           {/* Summary Strip */}
@@ -129,31 +227,45 @@ export function TrackComplaintsPage({
 
           {/* Selectable Complaint List */}
           <div className="mt-4 flex-1 space-y-1.5 overflow-y-auto max-h-[210px] pr-1">
-            {filtered.map((item) => {
-              const isSelected = activeComplaint?.id === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => onSelectComplaintId(item.id)}
-                  className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors ${
-                    isSelected
-                      ? 'border-[#064E3B] bg-[#ECFDF5]/80'
-                      : 'border-[#EEF3F0] bg-white hover:bg-[#F5F8F6]'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <p className="font-mono text-xs font-bold text-[#064E3B]">{item.id}</p>
-                    <p className="truncate text-xs text-[#374151]">{item.locationName}</p>
-                  </div>
-                  <ComplaintStatusLabel status={item.status} />
-                </button>
-              );
-            })}
-            {filtered.length === 0 && (
-              <p className="py-6 text-center text-xs text-[#6B7280]">
-                No complaints match &ldquo;{searchTerm}&rdquo;.
-              </p>
+            {loading && complaints.length === 0 ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-xs text-[#6B7280]">
+                <Loader2 className="h-4 w-4 animate-spin text-[#059669]" />
+                <span>Loading complaints...</span>
+              </div>
+            ) : (
+              <>
+                {filtered.map((item) => {
+                  const isSelected = activeComplaint?.id === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onSelectComplaintId(item.id)}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                        isSelected
+                          ? 'border-[#064E3B] bg-[#ECFDF5]/80'
+                          : 'border-[#EEF3F0] bg-white hover:bg-[#F5F8F6]'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="font-mono text-xs font-bold text-[#064E3B]">{item.id}</p>
+                        <p className="truncate text-xs text-[#374151]">{item.locationName}</p>
+                      </div>
+                      <ComplaintStatusLabel status={item.status} />
+                    </button>
+                  );
+                })}
+                {complaints.length === 0 && !loading && (
+                  <p className="py-6 text-center text-xs text-[#6B7280]">
+                    No complaints submitted yet.
+                  </p>
+                )}
+                {complaints.length > 0 && filtered.length === 0 && (
+                  <p className="py-6 text-center text-xs text-[#6B7280]">
+                    No complaints match &ldquo;{searchTerm}&rdquo;.
+                  </p>
+                )}
+              </>
             )}
           </div>
         </aside>
@@ -209,7 +321,7 @@ export function TrackComplaintsPage({
                   <dt className="text-[#6B7280]">Reported Date</dt>
                   <dd className="mt-0.5 flex items-center gap-1 font-mono font-medium text-[#1F2937] tabular-nums">
                     <Calendar className="h-3.5 w-3.5 text-[#059669]" />
-                    <span>{activeComplaint.reportedAt}</span>
+                    <span>{formatDisplayTimestamp(activeComplaint.reportedAt)}</span>
                   </dd>
                 </div>
                 <div>
@@ -225,14 +337,24 @@ export function TrackComplaintsPage({
             {/* Complaint Progress Timeline */}
             <div className="lg:col-span-7">
               <div className="flex items-center justify-between">
-                <h4 className="font-display text-sm font-bold text-[#022C22]">
-                  Complaint Progress Timeline
-                </h4>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-display text-sm font-bold text-[#022C22]">
+                    Complaint Progress Timeline
+                  </h4>
+                  {detailState?.loading && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#059669]" aria-label="Loading timeline" />
+                  )}
+                </div>
                 <span className="inline-flex items-center gap-1 text-xs text-[#6B7280]">
                   <Info className="h-3.5 w-3.5 text-[#059669]" />
                   <span>{activeComplaint.ward}</span>
                 </span>
               </div>
+              {detailState?.error && (
+                <p role="alert" className="mt-2 text-xs text-red-600">
+                  {detailState.error}
+                </p>
+              )}
 
               <ol className="mt-5 space-y-5">
                 {timeline.map((step, idx) => {

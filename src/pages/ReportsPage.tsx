@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { CheckCircle2, Download, Printer } from 'lucide-react';
 import { ComplaintStatusLabel, WasteCategoryText } from '../components/StatusText';
 import type { Complaint, ComplaintStatus, WasteCategory } from '../types/waste';
-import { complaintsToCsv, filterComplaints } from '../utils/wasteLogic';
+import { complaintsToCsv, filterComplaints, formatDisplayTimestamp } from '../utils/wasteLogic';
 
 interface ReportsPageProps {
   complaints: Complaint[];
@@ -114,6 +114,7 @@ export function ReportsPage({ complaints }: ReportsPageProps) {
             <option value="Pending">Pending</option>
             <option value="Assigned">Assigned</option>
             <option value="In Progress">In Progress</option>
+            <option value="Pending Verification">Pending Verification</option>
             <option value="Resolved">Resolved</option>
           </select>
         </div>
@@ -221,7 +222,7 @@ export function ReportsPage({ complaints }: ReportsPageProps) {
                     <ComplaintStatusLabel status={c.status} />
                   </td>
                   <td className="px-5 py-3 text-right font-mono tabular-nums text-[#6B7280] whitespace-nowrap">
-                    {c.reportedAt}
+                    {formatDisplayTimestamp(c.reportedAt)}
                   </td>
                 </tr>
               ))}

@@ -1,8 +1,35 @@
+
+# Frontend
 node_modules/
 build/
 dist/
 coverage/
-.DS_Store
-*.log
+.dist/
+
+# Environment files
 .env*
 !.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# AI model weights
+*.pt
+*.onnx
+*.engine
+
+# Generated files
+*.log
+.DS_Store
+Thumbs.db
+
+# Temporary backup files
+*.backup

@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, Truck, UserCheck } from 'lucide-react';
+import { CheckCircle2, Clock, ShieldCheck, Truck, UserCheck } from 'lucide-react';
 import type { ComplaintStatus, WasteCategory } from '../types/waste';
 import { CATEGORY_COLORS } from '../utils/wasteLogic';
 
@@ -9,6 +9,13 @@ export function ComplaintStatusLabel({ status }: { status: ComplaintStatus }) {
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#059669] whitespace-nowrap">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           Resolved
+        </span>
+      );
+    case 'Pending Verification':
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#7C3AED] whitespace-nowrap">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          Pending Verification
         </span>
       );
     case 'In Progress':

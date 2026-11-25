@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Bell, CheckCheck, CheckCircle2, MapPin, ScanSearch, UserCheck } from 'lucide-react';
 import type { NotificationItem } from '../types/waste';
+import { formatDisplayTimestamp } from '../utils/wasteLogic';
 
 interface NotificationsPageProps {
   notifications: NotificationItem[];
@@ -106,7 +107,9 @@ export function NotificationsPage({
                 <p className="mt-0.5 text-xs leading-relaxed text-[#4B5563]">
                   {item.message}
                 </p>
-                <p className="mt-1 font-mono text-[11px] text-[#6B7280]">{item.timestamp}</p>
+                <p className="mt-1 font-mono text-[11px] text-[#6B7280]">
+                  {formatDisplayTimestamp(item.timestamp)}
+                </p>
               </div>
             </div>
 

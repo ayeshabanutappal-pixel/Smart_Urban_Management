@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeftRight,
   Bell,
   ChevronDown,
   LogOut,
@@ -15,6 +14,7 @@ import type {
   PageRoute,
   UserProfile,
 } from '../types/waste';
+import { formatDisplayTimestamp } from '../utils/wasteLogic';
 
 const PAGE_TITLES: Record<PageRoute, string> = {
   dashboard: 'Dashboard',
@@ -24,6 +24,7 @@ const PAGE_TITLES: Record<PageRoute, string> = {
   'all-complaints': 'All Complaints',
   'track-complaints': 'Track Complaints',
   'assign-workers': 'Assign Workers',
+  'manage-workers': 'Manage Workers',
   analytics: 'Analytics',
   reports: 'Reports',
   notifications: 'Notifications',
@@ -41,7 +42,6 @@ interface TopHeaderProps {
   backendStatus: BackendStatus;
   onMarkNotificationRead: (id: string) => void;
   onNavigate: (page: PageRoute) => void;
-  onSwitchRole: () => void;
   onLogout: () => void;
   onToggleMobileMenu: () => void;
 }
@@ -56,7 +56,6 @@ export function TopHeader({
   backendStatus,
   onMarkNotificationRead,
   onNavigate,
-  onSwitchRole,
   onLogout,
   onToggleMobileMenu,
 }: TopHeaderProps) {
@@ -105,7 +104,7 @@ export function TopHeader({
           <p className="hidden text-xs text-[#6B7280] sm:block truncate">
             {backendStatus.connected
               ? 'Connected to Flask API'
-              : 'Demo Mode · Local preview (configure Flask URL in Settings)'}
+              : 'Offline Mode · Configure Flask API URL in Settings'}
           </p>
         </div>
       </div>
@@ -188,7 +187,7 @@ export function TopHeader({
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-xs font-semibold text-[#1F2937]">{item.title}</p>
                       <span className="text-[11px] text-[#6B7280] whitespace-nowrap">
-                        {item.timestamp}
+                        {formatDisplayTimestamp(item.timestamp)}
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-[#4B5563] line-clamp-2">{item.message}</p>
@@ -258,19 +257,6 @@ export function TopHeader({
                 >
                   <Settings className="h-3.5 w-3.5 text-[#064E3B]" />
                   <span>Settings &amp; Flask API</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileOpen(false);
-                    onSwitchRole();
-                  }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-[#064E3B] hover:bg-[#ECFDF5]"
-                >
-                  <ArrowLeftRight className="h-3.5 w-3.5 text-[#059669]" />
-                  <span>
-                    Switch to {user.role === 'admin' ? 'Citizen View' : 'Admin Console'}
-                  </span>
                 </button>
               </div>
               <div className="border-t border-[#EEF3F0] pt-1">

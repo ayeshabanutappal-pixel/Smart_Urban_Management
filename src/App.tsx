@@ -1,20 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
-import {
-  DEFAULT_SETTINGS,
-  DEMO_ADMIN_USER,
-  DEMO_CITIZEN_USER,
-  SEED_COMPLAINTS,
-  SEED_NOTIFICATIONS,
-  SEED_WORKERS,
-} from './data/seedData';
+import { DEFAULT_SETTINGS } from './data/seedData';
 import { AdminComplaintsPage } from './pages/AdminComplaintsPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { AssignWorkersPage } from './pages/AssignWorkersPage';
 import { AuthPage } from './pages/AuthPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DetectWastePage } from './pages/DetectWastePage';
+import { ManageWorkersPage } from './pages/ManageWorkersPage';
 import { MyComplaintsPage } from './pages/MyComplaintsPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { ProfilePage } from './pages/ProfilePage';
@@ -22,32 +16,55 @@ import { ReportGarbagePage } from './pages/ReportGarbagePage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TrackComplaintsPage } from './pages/TrackComplaintsPage';
+import { WorkerDashboardPage } from './pages/WorkerDashboardPage';
 import {
   checkFlaskHealth,
+  clearStoredAuthToken,
+  createWorkerOnFlask,
+  type CreateComplaintDraft,
+  type CreateWorkerDraft,
+  fetchComplaints,
+  fetchCurrentUser,
+  fetchDashboardSummary,
+  fetchNotifications,
+  fetchWorkersFromFlask,
+  getStoredAuthToken,
+  logoutFromFlask,
+  markAllNotificationsRead,
+  markNotificationRead,
+  resolveApiBaseUrl,
+  setStoredAuthToken,
   submitComplaintToFlask,
+  toggleWorkerActiveOnFlask,
   updateComplaintOnFlask,
+  updateWorkerOnFlask,
+  verifyComplaintOnFlask,
 } from './services/flaskApi';
 import type {
   AppSettings,
   BackendStatus,
   Complaint,
   ComplaintStatus,
-  Coordinates,
+  DashboardSummary,
   NotificationItem,
   PageRoute,
   UserProfile,
   WasteCategory,
   Worker,
 } from './types/waste';
-import { generateNextComplaintId } from './utils/wasteLogic';
 
 const STORAGE_KEYS = {
-  user: 'wastesmart_session_user_v1',
   rememberedEmail: 'wastesmart_remember_email_v1',
-  complaints: 'wastesmart_complaints_v1',
-  notifications: 'wastesmart_notifications_v1',
   settings: 'wastesmart_settings_v1',
 };
+
+const ADMIN_ONLY_PAGES: ReadonlySet<PageRoute> = new Set([
+  'all-complaints',
+  'assign-workers',
+  'manage-workers',
+  'analytics',
+  'reports',
+]);
 
 function readStorage<T>(key: string, fallback: T): T {
   try {
@@ -59,38 +76,41 @@ function readStorage<T>(key: string, fallback: T): T {
   }
 }
 
+function loadNormalizedSettings(): AppSettings {
+  const saved = readStorage<Partial<AppSettings>>(STORAGE_KEYS.settings, {});
+  const merged: AppSettings = {
+    ...DEFAULT_SETTINGS,
+    ...(saved && typeof saved === 'object' ? saved : {}),
+  };
+
+  merged.flaskApiBaseUrl = resolveApiBaseUrl(merged.flaskApiBaseUrl);
+  return merged;
+}
+
 export default function App() {
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('autostart') === '1') {
-      return params.get('role') === 'admin' ? DEMO_ADMIN_USER : DEMO_CITIZEN_USER;
-    }
-    return readStorage<UserProfile | null>(STORAGE_KEYS.user, null);
-  });
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(() => Boolean(getStoredAuthToken()));
 
   const [rememberedEmail, setRememberedEmail] = useState<string>(() =>
     readStorage<string>(STORAGE_KEYS.rememberedEmail, '')
   );
 
-  const [complaints, setComplaints] = useState<Complaint[]>(() =>
-    readStorage<Complaint[]>(STORAGE_KEYS.complaints, SEED_COMPLAINTS)
-  );
-  const [workers] = useState<Worker[]>(SEED_WORKERS);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(() =>
-    readStorage<NotificationItem[]>(STORAGE_KEYS.notifications, SEED_NOTIFICATIONS)
-  );
-  const [settings, setSettings] = useState<AppSettings>(() =>
-    readStorage<AppSettings>(STORAGE_KEYS.settings, DEFAULT_SETTINGS)
-  );
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [complaintsLoading, setComplaintsLoading] = useState(false);
+  const [complaintsError, setComplaintsError] = useState<string | null>(null);
+
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [settings, setSettings] = useState<AppSettings>(() => loadNormalizedSettings());
 
   const [activePage, setActivePage] = useState<PageRoute>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
-  const [trackedComplaintId, setTrackedComplaintId] = useState<string | null>(
-    SEED_COMPLAINTS[0]?.id ?? null
-  );
+  const [trackedComplaintId, setTrackedComplaintId] = useState<string | null>(null);
   const [reportPrefill, setReportPrefill] = useState<{
     imageUrl?: string;
+    imageFile?: File | null;
+    aiDetected?: boolean;
     category?: WasteCategory;
     confidence?: number;
     title?: string;
@@ -98,36 +118,154 @@ export default function App() {
 
   const [backendStatus, setBackendStatus] = useState<BackendStatus>({
     connected: false,
-    mode: 'demo-local',
+    mode: 'offline-local',
     lastCheckedAt: '--',
     message: 'Checking Flask API...',
   });
 
-  // Persist non-sensitive demo state cleanly
-  useEffect(() => {
-    try {
-      if (user) window.localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(user));
-      else window.localStorage.removeItem(STORAGE_KEYS.user);
-    } catch {
-      // ignore quota errors
-    }
-  }, [user]);
+  // Live dashboard data from Flask /api/dashboard/summary
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEYS.complaints, JSON.stringify(complaints));
-    } catch {
-      // ignore
-    }
-  }, [complaints]);
+  const resetUserWorkspaceState = useCallback(() => {
+    setComplaints([]);
+    setComplaintsLoading(false);
+    setComplaintsError(null);
+    setWorkers([]);
+    setNotifications([]);
+    setDashboardSummary(null);
+    setDashboardLoading(false);
+    setDashboardError(null);
+    setTrackedComplaintId(null);
+    setReportPrefill(null);
+  }, []);
 
+  const handleSessionExpired = useCallback(() => {
+    clearStoredAuthToken();
+    setUser(null);
+    resetUserWorkspaceState();
+    setActivePage('dashboard');
+    setMobileMenuOpen(false);
+  }, [resetUserWorkspaceState]);
+
+  const loadWorkspaceData = useCallback(
+    async (role: UserProfile['role'], showBlockingLoader = true) => {
+      if (role === 'worker') {
+        return;
+      }
+      if (showBlockingLoader) {
+        setDashboardLoading(true);
+        setComplaintsLoading(true);
+      }
+      setDashboardError(null);
+      setComplaintsError(null);
+
+      const summaryPromise = fetchDashboardSummary(
+        settings.flaskApiBaseUrl,
+        handleSessionExpired
+      )
+        .then((summary) => {
+          setDashboardSummary(summary);
+          setDashboardError(null);
+        })
+        .catch((err) => {
+          setDashboardSummary(null);
+          setDashboardError(
+            err instanceof Error ? err.message : 'Unable to load dashboard summary.'
+          );
+        })
+        .finally(() => {
+          setDashboardLoading(false);
+        });
+
+      const complaintsPromise = fetchComplaints(
+        settings.flaskApiBaseUrl,
+        undefined,
+        handleSessionExpired
+      )
+        .then((liveComplaints) => {
+          setComplaints(liveComplaints);
+          setComplaintsError(null);
+        })
+        .catch((err) => {
+          setComplaintsError(
+            err instanceof Error ? err.message : 'Unable to load complaints from server.'
+          );
+        })
+        .finally(() => {
+          setComplaintsLoading(false);
+        });
+
+      const notificationsPromise = fetchNotifications(
+        settings.flaskApiBaseUrl,
+        handleSessionExpired
+      )
+        .then(({ notifications: liveNotifs }) => {
+          setNotifications(liveNotifs);
+        })
+        .catch(() => {
+          // Notification failure does not block complaints or dashboard
+        });
+
+      const workersPromise =
+        role === 'admin'
+          ? fetchWorkersFromFlask(settings.flaskApiBaseUrl, handleSessionExpired, false)
+              .then((liveWorkers) => {
+                setWorkers(liveWorkers);
+              })
+              .catch(() => {
+                setWorkers([]);
+              })
+          : Promise.resolve();
+
+      await Promise.all([
+        summaryPromise,
+        complaintsPromise,
+        notificationsPromise,
+        workersPromise,
+      ]);
+    },
+    [settings.flaskApiBaseUrl, handleSessionExpired]
+  );
+
+  // Verify stored JWT on mount by fetching authoritative user profile from /api/auth/me
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(notifications));
-    } catch {
-      // ignore
+    const token = getStoredAuthToken();
+    if (!token) {
+      setAuthChecking(false);
+      return;
     }
-  }, [notifications]);
+
+    let active = true;
+    void fetchCurrentUser(settings.flaskApiBaseUrl, token)
+      .then((profile) => {
+        if (active) setUser(profile);
+      })
+      .catch(() => {
+        clearStoredAuthToken();
+        if (active) setUser(null);
+      })
+      .finally(() => {
+        if (active) setAuthChecking(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [settings.flaskApiBaseUrl]);
+
+  // Fetch live complaints, dashboard summary, notifications, and admin workers on login/refresh
+  const currentUserId = user?.id ?? null;
+  const currentUserRole = user?.role ?? null;
+  useEffect(() => {
+    if (!currentUserId || !currentUserRole) {
+      resetUserWorkspaceState();
+      return;
+    }
+
+    void loadWorkspaceData(currentUserRole, true);
+  }, [currentUserId, currentUserRole, loadWorkspaceData, resetUserWorkspaceState]);
 
   useEffect(() => {
     try {
@@ -137,17 +275,8 @@ export default function App() {
     }
   }, [settings]);
 
-  // Probe Flask connectivity only when Live Flask API mode is enabled
+  // Check Flask backend health whenever the configured API URL changes
   useEffect(() => {
-    if (!settings.useLiveFlaskApi) {
-      setBackendStatus({
-        connected: false,
-        mode: 'demo-local',
-        lastCheckedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        message: 'Running in Demo Mode — enable Live Flask API in Settings when your Flask server is online.',
-      });
-      return;
-    }
     let active = true;
     void checkFlaskHealth(settings.flaskApiBaseUrl).then((st) => {
       if (active) setBackendStatus(st);
@@ -157,7 +286,12 @@ export default function App() {
     };
   }, [settings.flaskApiBaseUrl, settings.useLiveFlaskApi]);
 
-  const handleAuthenticated = (authenticatedUser: UserProfile, remember: boolean) => {
+  const handleAuthenticated = (
+    authenticatedUser: UserProfile,
+    token: string,
+    remember: boolean
+  ) => {
+    setStoredAuthToken(token, remember);
     setUser(authenticatedUser);
     setActivePage('dashboard');
     try {
@@ -177,89 +311,50 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    const token = getStoredAuthToken();
+    clearStoredAuthToken();
+    void logoutFromFlask(settings.flaskApiBaseUrl, token);
     setUser(null);
+    resetUserWorkspaceState();
     setActivePage('dashboard');
     setMobileMenuOpen(false);
   };
 
-  const handleSwitchRole = () => {
-    if (!user) return;
-    const nextUser = user.role === 'admin' ? DEMO_CITIZEN_USER : DEMO_ADMIN_USER;
-    setUser(nextUser);
-    setActivePage('dashboard');
+  const navigateWithRoleGuard = (page: PageRoute) => {
+    if (user && ADMIN_ONLY_PAGES.has(page) && user.role !== 'admin') {
+      setActivePage('dashboard');
+      return;
+    }
+    setActivePage(page);
+    if (user) {
+      void loadWorkspaceData(user.role, false);
+    }
   };
 
   const handleTrackComplaint = (complaintId: string) => {
     setTrackedComplaintId(complaintId);
-    setActivePage('track-complaints');
+    navigateWithRoleGuard('track-complaints');
   };
 
-  const handleSubmitComplaint = async (draft: {
-    title: string;
-    description: string;
-    category: WasteCategory;
-    severity: 'Low' | 'Medium' | 'High';
-    locationName: string;
-    ward: string;
-    coordinates: Coordinates;
-    imageUrl: string;
-    aiDetected: boolean;
-    aiConfidence: number;
-    estimatedWeightKg: number;
-  }) => {
-    const nowFormatted = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const newId = generateNextComplaintId(complaints);
-
-    const newComplaint: Complaint = {
-      id: newId,
-      citizenId: user?.id ?? 'cit-101',
-      citizenName: user?.name ?? 'Citizen User',
-      title: draft.title,
-      description: draft.description,
-      category: draft.category,
-      aiDetected: draft.aiDetected,
-      aiConfidence: draft.aiConfidence,
-      status: 'Pending',
-      severity: draft.severity,
-      locationName: draft.locationName,
-      ward: draft.ward,
-      coordinates: draft.coordinates,
-      imageUrl: draft.imageUrl,
-      reportedAt: nowFormatted,
-      updatedAt: nowFormatted,
-      assignedWorkerId: null,
-      assignedWorkerName: null,
-      estimatedWeightKg: draft.estimatedWeightKg,
-    };
-
+  const handleSubmitComplaint = async (draft: CreateComplaintDraft) => {
     const { savedToFlask, complaint } = await submitComplaintToFlask(
       settings.flaskApiBaseUrl,
-      newComplaint,
-      settings.useLiveFlaskApi
+      draft,
+      handleSessionExpired
     );
 
-    setComplaints((prev) => [complaint, ...prev]);
+    setComplaints((prev) => [complaint, ...prev.filter((c) => c.id !== complaint.id)]);
     setTrackedComplaintId(complaint.id);
     setReportPrefill(null);
 
-    setNotifications((prev) => [
-      {
-        id: `ntf-${Date.now()}`,
-        title: `New Complaint ${complaint.id} Submitted`,
-        message: `${complaint.category} waste reported at ${complaint.locationName}.`,
-        timestamp: 'Just now',
-        read: false,
-        type: 'complaint',
-        complaintId: complaint.id,
-        audience: 'all',
-      },
-      ...prev,
-    ]);
+    if (user) {
+      void loadWorkspaceData(user.role, false);
+    }
 
     return { complaint, savedToFlask };
   };
 
-  const handleUpdateComplaint = (
+  const handleUpdateComplaint = async (
     complaintId: string,
     patch: {
       status?: ComplaintStatus;
@@ -267,65 +362,98 @@ export default function App() {
       assignedWorkerName?: string | null;
     }
   ) => {
-    const nowFormatted = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    setComplaints((prev) =>
-      prev.map((c) => {
-        if (c.id !== complaintId) return c;
-        return {
-          ...c,
-          ...patch,
-          updatedAt: nowFormatted,
-          resolutionNotes:
-            patch.status === 'Resolved'
-              ? c.resolutionNotes || 'Site cleared and verified clean by municipal team.'
-              : c.resolutionNotes,
-        };
-      })
-    );
-
-    void updateComplaintOnFlask(
+    const updatedComplaint = await updateComplaintOnFlask(
       settings.flaskApiBaseUrl,
       complaintId,
       patch,
-      settings.useLiveFlaskApi
+      handleSessionExpired
     );
 
-    const notifTitle =
-      patch.status === 'Resolved'
-        ? `Complaint ${complaintId} Resolved`
-        : patch.assignedWorkerName
-        ? `Worker Assigned to ${complaintId}`
-        : `Complaint ${complaintId} Updated`;
-    const notifMsg =
-      patch.status === 'Resolved'
-        ? 'Municipal team verified the location is clear and closed the complaint.'
-        : patch.assignedWorkerName
-        ? `${patch.assignedWorkerName} has been dispatched to handle ${complaintId}.`
-        : `Complaint status changed to ${patch.status}.`;
+    setComplaints((prev) =>
+      prev.map((c) => (c.id === updatedComplaint.id ? updatedComplaint : c))
+    );
 
-    setNotifications((prev) => [
-      {
-        id: `ntf-${Date.now()}`,
-        title: notifTitle,
-        message: notifMsg,
-        timestamp: 'Just now',
-        read: false,
-        type: patch.status === 'Resolved' ? 'resolved' : 'assignment',
-        complaintId,
-        audience: 'all',
-      },
-      ...prev,
-    ]);
+    if (user) {
+      void loadWorkspaceData(user.role, false);
+    }
+  };
+
+  const handleVerifyComplaint = async (
+    complaintId: string,
+    payload: { decision: 'approve' | 'reject'; note?: string; rejectionReason?: string }
+  ) => {
+    const updatedComplaint = await verifyComplaintOnFlask(
+      settings.flaskApiBaseUrl,
+      complaintId,
+      payload,
+      handleSessionExpired
+    );
+
+    setComplaints((prev) =>
+      prev.map((c) => (c.id === updatedComplaint.id ? updatedComplaint : c))
+    );
+
+    if (user) {
+      void loadWorkspaceData(user.role, false);
+    }
   };
 
   const handleMarkNotificationRead = (id: string) => {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
+    void markNotificationRead(settings.flaskApiBaseUrl, id, handleSessionExpired).catch(() => {});
   };
 
   const handleMarkAllNotificationsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    void markAllNotificationsRead(settings.flaskApiBaseUrl, handleSessionExpired).catch(() => {});
+  };
+
+  /**
+   * Refresh the full worker list from Flask (all workers, active + inactive)
+   * so the Manage Workers page always shows the latest state.
+   */
+  const refreshAllWorkers = useCallback(() => {
+    if (user?.role !== 'admin') return;
+    void fetchWorkersFromFlask(settings.flaskApiBaseUrl, handleSessionExpired, false)
+      .then((w) => setWorkers(w))
+      .catch(() => {});
+  }, [settings.flaskApiBaseUrl, handleSessionExpired, user?.role]);
+
+  const handleCreateWorker = async (draft: CreateWorkerDraft) => {
+    const newWorker = await createWorkerOnFlask(
+      settings.flaskApiBaseUrl,
+      draft,
+      handleSessionExpired
+    );
+    setWorkers((prev) => [...prev, newWorker]);
+    return newWorker;
+  };
+
+  const handleUpdateWorkerDetails = async (
+    workerId: string,
+    patch: Partial<CreateWorkerDraft>
+  ) => {
+    const updated = await updateWorkerOnFlask(
+      settings.flaskApiBaseUrl,
+      workerId,
+      patch,
+      handleSessionExpired
+    );
+    setWorkers((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+    return updated;
+  };
+
+  const handleToggleWorkerActive = async (workerId: string, isActive: boolean) => {
+    const updated = await toggleWorkerActiveOnFlask(
+      settings.flaskApiBaseUrl,
+      workerId,
+      isActive,
+      handleSessionExpired
+    );
+    setWorkers((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+    return updated;
   };
 
   const handleUpdateProfile = (patch: Partial<UserProfile>) => {
@@ -333,20 +461,39 @@ export default function App() {
   };
 
   const handleUpdateSettings = (patch: Partial<AppSettings>) => {
-    setSettings((prev) => ({ ...prev, ...patch }));
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      if (patch.flaskApiBaseUrl !== undefined) {
+        next.flaskApiBaseUrl = resolveApiBaseUrl(patch.flaskApiBaseUrl);
+      }
+      return next;
+    });
   };
 
   const handleTestBackend = async (url: string) => {
-    const st = await checkFlaskHealth(url);
+    const st = await checkFlaskHealth(resolveApiBaseUrl(url));
     setBackendStatus(st);
     return st;
   };
 
   const handleResetDemoData = () => {
-    setComplaints(SEED_COMPLAINTS);
-    setNotifications(SEED_NOTIFICATIONS);
-    setTrackedComplaintId(SEED_COMPLAINTS[0]?.id ?? null);
+    if (user) {
+      void loadWorkspaceData(user.role, true);
+    }
   };
+
+  if (authChecking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F5F8F6] px-4">
+        <div className="flex items-center gap-3 rounded-2xl border border-[#DCE6E0] bg-white px-6 py-4 shadow-xs">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-[#064E3B] border-t-transparent" />
+          <span className="text-sm font-semibold text-[#022C22]">
+            Verifying WasteSmart session...
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -354,6 +501,18 @@ export default function App() {
         flaskApiBaseUrl={settings.flaskApiBaseUrl}
         onAuthenticated={handleAuthenticated}
         initialRememberedEmail={rememberedEmail}
+      />
+    );
+  }
+
+  if (user.role === 'worker') {
+    return (
+      <WorkerDashboardPage
+        user={user}
+        flaskApiBaseUrl={settings.flaskApiBaseUrl}
+        onUserUpdated={setUser}
+        onSessionExpired={handleSessionExpired}
+        onLogout={handleLogout}
       />
     );
   }
@@ -371,7 +530,7 @@ export default function App() {
         unreadNotifications={unreadNotificationsCount}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
-        onNavigate={(page) => setActivePage(page)}
+        onNavigate={navigateWithRoleGuard}
         onLogout={handleLogout}
       />
 
@@ -382,13 +541,12 @@ export default function App() {
           searchQuery={globalSearch}
           onSearchChange={setGlobalSearch}
           onSearchSubmit={() => {
-            setActivePage(user.role === 'admin' ? 'all-complaints' : 'my-complaints');
+            navigateWithRoleGuard(user.role === 'admin' ? 'all-complaints' : 'my-complaints');
           }}
           notifications={visibleNotifications}
           backendStatus={backendStatus}
           onMarkNotificationRead={handleMarkNotificationRead}
-          onNavigate={(page) => setActivePage(page)}
-          onSwitchRole={handleSwitchRole}
+          onNavigate={navigateWithRoleGuard}
           onLogout={handleLogout}
           onToggleMobileMenu={() => setMobileMenuOpen((o) => !o)}
         />
@@ -398,7 +556,11 @@ export default function App() {
             <DashboardPage
               user={user}
               complaints={complaints}
-              onNavigate={setActivePage}
+              dashboardSummary={dashboardSummary}
+              dashboardLoading={dashboardLoading}
+              dashboardError={dashboardError}
+              onRetryDashboard={() => void loadWorkspaceData(user.role, true)}
+              onNavigate={navigateWithRoleGuard}
               onTrackComplaint={handleTrackComplaint}
             />
           )}
@@ -407,6 +569,8 @@ export default function App() {
             <ReportGarbagePage
               user={user}
               flaskApiBaseUrl={settings.flaskApiBaseUrl}
+              useLiveFlaskApi={settings.useLiveFlaskApi}
+              onSessionExpired={handleSessionExpired}
               prefillData={reportPrefill}
               onSubmitComplaint={handleSubmitComplaint}
               onTrackComplaint={handleTrackComplaint}
@@ -416,9 +580,10 @@ export default function App() {
           {activePage === 'detect-waste' && (
             <DetectWastePage
               flaskApiBaseUrl={settings.flaskApiBaseUrl}
+              onSessionExpired={handleSessionExpired}
               onReportWithDetection={(payload) => {
                 setReportPrefill(payload);
-                setActivePage('report-garbage');
+                navigateWithRoleGuard('report-garbage');
               }}
             />
           )}
@@ -428,18 +593,26 @@ export default function App() {
               user={user}
               complaints={complaints}
               globalSearch={globalSearch}
+              loading={complaintsLoading}
+              error={complaintsError}
+              onRetry={() => void loadWorkspaceData(user.role, true)}
               onTrackComplaint={handleTrackComplaint}
-              onNavigate={setActivePage}
+              onNavigate={navigateWithRoleGuard}
             />
           )}
 
-          {activePage === 'all-complaints' && (
+          {activePage === 'all-complaints' && user.role === 'admin' && (
             <AdminComplaintsPage
               complaints={complaints}
               workers={workers}
               globalSearch={globalSearch}
               compactTables={settings.compactTables}
+              flaskApiBaseUrl={settings.flaskApiBaseUrl}
+              loading={complaintsLoading}
+              error={complaintsError}
+              onRetry={() => void loadWorkspaceData(user.role, true)}
               onUpdateComplaint={handleUpdateComplaint}
+              onVerifyComplaint={handleVerifyComplaint}
               onTrackComplaint={handleTrackComplaint}
             />
           )}
@@ -450,12 +623,17 @@ export default function App() {
               selectedComplaintId={trackedComplaintId}
               onSelectComplaintId={setTrackedComplaintId}
               backendStatus={backendStatus}
+              loading={complaintsLoading}
+              error={complaintsError}
+              onRetry={() => void loadWorkspaceData(user.role, true)}
+              flaskApiBaseUrl={settings.flaskApiBaseUrl}
+              onSessionExpired={handleSessionExpired}
             />
           )}
 
-          {activePage === 'assign-workers' && (
+          {activePage === 'assign-workers' && user.role === 'admin' && (
             <AssignWorkersPage
-              workers={workers}
+              workers={workers.filter((w) => w.isActive)}
               complaints={complaints}
               onAssignWorker={(complaintId, workerId, workerName, status) =>
                 handleUpdateComplaint(complaintId, {
@@ -467,9 +645,24 @@ export default function App() {
             />
           )}
 
-          {activePage === 'analytics' && <AnalyticsPage complaints={complaints} />}
+          {activePage === 'analytics' && user.role === 'admin' && (
+            <AnalyticsPage complaints={complaints} />
+          )}
 
-          {activePage === 'reports' && <ReportsPage complaints={complaints} />}
+          {activePage === 'manage-workers' && user.role === 'admin' && (
+            <ManageWorkersPage
+              workers={workers}
+              flaskApiBaseUrl={settings.flaskApiBaseUrl}
+              onCreateWorker={handleCreateWorker}
+              onUpdateWorker={handleUpdateWorkerDetails}
+              onToggleActive={handleToggleWorkerActive}
+              onWorkerListChanged={refreshAllWorkers}
+            />
+          )}
+
+          {activePage === 'reports' && user.role === 'admin' && (
+            <ReportsPage complaints={complaints} />
+          )}
 
           {activePage === 'notifications' && (
             <NotificationsPage
